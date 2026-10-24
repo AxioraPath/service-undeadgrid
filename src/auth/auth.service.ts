@@ -143,7 +143,13 @@ export class AuthService {
     await this.prisma.passwordResetToken.create({
       data: { userId: user.id, tokenHash: sha256(raw), expiresAt: new Date(Date.now() + RESET_TTL_MS) },
     });
-    await this.email.sendPasswordReset(normEmail, raw);
+    // Un fallo de SMTP no debe tumbar la petición ni revelar que el correo
+    // existe: se registra y se responde igual (respuesta uniforme).
+    try {
+      await this.email.sendPasswordReset(normEmail, raw);
+    } catch (err) {
+      this.logger.error(`No se pudo enviar el correo de recuperación: ${String(err)}`);
+    }
   }
 
   /** Aplica el reset: valida token, cambia contraseña, invalida sesiones. */
