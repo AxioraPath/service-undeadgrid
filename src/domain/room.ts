@@ -1,0 +1,249 @@
+import {
+  CORE_HP,
+  DIFFICULTIES,
+  MAP_IDS,
+  MATCH_DURATION,
+  PHASES,
+  ROOM_CAPACITY,
+  SLOTS,
+  type PhaseDef,
+  type Slot,
+} from '../config/game.config';
+import type {
+  ChatMessageSnapshot,
+  CombatSnapshot,
+  MatchResult,
+  PhaseId,
+  RoomSnapshot,
+  RoomStatus,
+} from '../contracts';
+import { Player } from './player';
+
+/** Transiciones permitidas de la máquina de estados de sala. */
+const TRANSITIONS: Record<RoomStatus, readonly RoomStatus[]> = {
+  lobby: ['selection', 'results'],
+  selection: ['preparation', 'lobby', 'results'],
+  preparation: ['combat', 'results'],
+  combat: ['results'],
+  results: [],
+};
+
+/** Deriva la fase de combate a partir de los segundos transcurridos. */
+export function phaseAt(elapsed: number): PhaseDef {
+  for (const p of PHASES) {
+    if (elapsed >= p.start && elapsed < p.end) return p;
+  }
+  return PHASES[PHASES.length - 1];
+}
+
+/**
+ * Sala de juego. Objeto de dominio mutable y autoritativo. No conoce Socket.IO;
+ * solo expone operaciones de dominio y genera snapshots. Toda emisión de red la
+ * hace el gateway a partir de estos snapshots.
+ */
+export class Room {
+  readonly code: string;
+  status: RoomStatus = 'lobby';
+  readonly seed: number;
+  mapId: string = MAP_IDS[0];
+  difficulty: string = DIFFICULTIES[0];
+  hostSlot: Slot = SLOTS[0];
+
+  readonly players = new Map<Slot, Player>();
+  readonly chat: ChatMessageSnapshot[] = [];
+
+  /** Vida de cada núcleo (autoritativa). */
+  cores: Record<Slot, number> = { 1: CORE_HP, 2: CORE_HP };
+
+  /** Epoch ms del inicio del combate; null fuera de combate. */
+  combatStartedAt: number | null = null;
+  /** Fase emitida por última vez (para detectar cambios). */
+  lastPhaseId: PhaseId | null = null;
+  result: MatchResult | null = null;
+
+  readonly createdAt: number;
+  private version = 0;
+  private chatSeq = 0;
+
+  constructor(code: string, seed: number, now: number) {
+    this.code = code;
+    this.seed = seed;
+    this.createdAt = now;
+  }
+
+  // ---- Consultas ----
+
+  get isFull(): boolean {
+    return this.players.size >= ROOM_CAPACITY;
+  }
+
+  get host(): Player | undefined {
+    return this.players.get(this.hostSlot);
+  }
+
+  getBySession(sessionId: string): Player | undefined {
+    for (const p of this.players.values()) {
+      if (p.sessionId === sessionId) return p;
+    }
+    return undefined;
+  }
+
+  getBySocket(socketId: string): Player | undefined {
+    for (const p of this.players.values()) {
+      if (p.socketId === socketId) return p;
+    }
+    return undefined;
+  }
+
+  /** Primer slot libre (1 antes que 2). */
+  freeSlot(): Slot | null {
+    for (const s of SLOTS) {
+      if (!this.players.has(s)) return s;
+    }
+    return null;
+  }
+
+  get connectedCount(): number {
+    let n = 0;
+    for (const p of this.players.values()) if (p.connected) n++;
+    return n;
+  }
+
+  // ---- Mutaciones de dominio ----
+
+  addPlayer(player: Player): void {
+    this.players.set(player.slot, player);
+    this.touch();
+  }
+
+  removePlayer(slot: Slot): void {
+    this.players.delete(slot);
+    this.touch();
+  }
+
+  /** Reasigna host al jugador conectado restante, si hace falta. */
+  reassignHostIfNeeded(): void {
+    if (this.host?.connected) return;
+    for (const s of SLOTS) {
+      const p = this.players.get(s);
+      if (p?.connected) {
+        this.hostSlot = p.slot;
+        for (const other of this.players.values()) other.isHost = other.slot === p.slot;
+        this.touch();
+        return;
+      }
+    }
+  }
+
+  addChat(player: Player, text: string, now: number): ChatMessageSnapshot {
+    const msg: ChatMessageSnapshot = {
+      id: ++this.chatSeq,
+      slot: player.slot,
+      author: player.name,
+      text,
+      at: now,
+    };
+    this.chat.push(msg);
+    if (this.chat.length > 200) this.chat.shift();
+    return msg;
+  }
+
+  /** Comprueba si una transición de estado es válida. */
+  canTransition(to: RoomStatus): boolean {
+    return TRANSITIONS[this.status].includes(to);
+  }
+
+  /** Aplica una transición validada. Lanza si es inválida (error de programación). */
+  transition(to: RoomStatus): void {
+    if (!this.canTransition(to)) {
+      throw new Error(`Transición inválida: ${this.status} → ${to}`);
+    }
+    this.status = to;
+    this.touch();
+  }
+
+  /** ¿Todos los asientos ocupados, conectados y listos? (condición de arranque). */
+  allReady(): boolean {
+    if (this.players.size !== ROOM_CAPACITY) return false;
+    for (const p of this.players.values()) {
+      if (!p.connected || !p.ready) return false;
+    }
+    return true;
+  }
+
+  /** ¿Todos confirmaron superviviente? (condición para salir de selección). */
+  allSurvivorsConfirmed(): boolean {
+    if (this.players.size !== ROOM_CAPACITY) return false;
+    for (const p of this.players.values()) {
+      if (!p.survivorConfirmed) return false;
+    }
+    return true;
+  }
+
+  // ---- Combate (reloj autoritativo) ----
+
+  startCombat(now: number): void {
+    this.combatStartedAt = now;
+    this.cores = { 1: CORE_HP, 2: CORE_HP };
+    this.lastPhaseId = phaseAt(0).id;
+    this.touch();
+  }
+
+  /** Segundos transcurridos de combate (acotado a MATCH_DURATION). */
+  elapsed(now: number): number {
+    if (this.combatStartedAt === null) return 0;
+    return Math.min(MATCH_DURATION, Math.floor((now - this.combatStartedAt) / 1000));
+  }
+
+  combatSnapshot(now: number): CombatSnapshot {
+    const elapsed = this.elapsed(now);
+    const phase = phaseAt(elapsed);
+    return {
+      elapsed,
+      phase: phase.id,
+      wave: phase.wave,
+      cores: { ...this.cores },
+    };
+  }
+
+  /** Aplica daño al núcleo objetivo. Devuelve true si llegó a 0. */
+  damageCore(target: Slot, amount: number): boolean {
+    this.cores[target] = Math.max(0, this.cores[target] - Math.floor(amount));
+    this.touch();
+    return this.cores[target] === 0;
+  }
+
+  /** Marca el fin de partida con un resultado. */
+  finish(result: MatchResult): void {
+    this.result = result;
+    this.status = 'results';
+    this.combatStartedAt = null;
+    this.touch();
+  }
+
+  // ---- Snapshot ----
+
+  /** Incrementa la versión del snapshot (marca el estado como modificado). */
+  touch(): void {
+    this.version++;
+  }
+
+  toSnapshot(now: number): RoomSnapshot {
+    const players = [...this.players.values()]
+      .sort((a, b) => a.slot - b.slot)
+      .map((p) => p.toSnapshot());
+    return {
+      code: this.code,
+      status: this.status,
+      seed: this.seed,
+      mapId: this.mapId,
+      difficulty: this.difficulty,
+      hostSlot: this.hostSlot,
+      players,
+      combat: this.status === 'combat' ? this.combatSnapshot(now) : null,
+      result: this.result,
+      version: this.version,
+      at: now,
+    };
+  }
+}
