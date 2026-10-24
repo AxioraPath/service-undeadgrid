@@ -1,7 +1,7 @@
 import { Body, Controller, HttpCode, Post, Req, Res } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthService, type AuthTokens } from './auth.service';
-import { ForgotPasswordDto, LoginDto, RegisterDto, ResetPasswordDto } from './dto';
+import { LoginDto, RegisterDto } from './dto';
 
 const REFRESH_COOKIE = 'refresh_token';
 const REFRESH_MAX_AGE = 30 * 24 * 60 * 60 * 1000;
@@ -51,20 +51,5 @@ export class AuthController {
     await this.auth.logout(req.cookies?.[REFRESH_COOKIE] as string | undefined);
     res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
     return { ok: true };
-  }
-
-  @Post('forgot-password')
-  @HttpCode(200)
-  async forgot(@Body() dto: ForgotPasswordDto) {
-    await this.auth.forgotPassword(dto.email);
-    // Respuesta uniforme: no revelar si el correo existe.
-    return { ok: true, message: 'Si el correo existe, enviamos un enlace de recuperación.' };
-  }
-
-  @Post('reset-password')
-  @HttpCode(200)
-  async reset(@Body() dto: ResetPasswordDto) {
-    await this.auth.resetPassword(dto.token, dto.password);
-    return { ok: true, message: 'Contraseña actualizada. Ya puedes iniciar sesión.' };
   }
 }

@@ -25,7 +25,6 @@ model User {
   profile       PlayerProfile?
   stats         PlayerStats?
   refreshTokens RefreshToken[]
-  resetTokens   PasswordResetToken[]
 
   @@map("users")
 }
@@ -109,18 +108,4 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
-}
-
-/// Tokens de recuperación de contraseña (se guarda solo el hash).
-model PasswordResetToken {
-  id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tokenHash String   @unique
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime @default(now())
-
-  @@index([userId])
-  @@map("password_reset_tokens")
 }

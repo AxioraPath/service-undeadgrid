@@ -9,7 +9,6 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma/prisma.service';
-import { EmailService } from '../email/email.service';
 
 export interface AuthTokens {
   accessToken: string;
@@ -24,7 +23,6 @@ export interface PublicUser {
 
 const ACCESS_TTL = '15m';
 const REFRESH_TTL_DAYS = 30;
-const RESET_TTL_MS = 60 * 60 * 1000; // 1 hora
 
 /** Hash SHA-256 para tokens opacos que guardamos en BD (no reversibles). */
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
@@ -37,7 +35,6 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
-    private readonly email: EmailService,
   ) {}
 
   private accessSecret(): string {
@@ -128,44 +125,5 @@ export class AuthService {
   /** Verifica un access token (usado por el guard HTTP y el socket). */
   async verifyAccess(token: string): Promise<{ sub: string; email: string }> {
     return this.jwt.verifyAsync(token, { secret: this.accessSecret() });
-  }
-
-  /**
-   * Inicia recuperación. Siempre responde igual (no revela si el correo existe).
-   * Genera un token opaco, guarda su hash con expiración, y envía el email.
-   */
-  async forgotPassword(email: string): Promise<void> {
-    const normEmail = email.trim().toLowerCase();
-    const user = await this.prisma.user.findUnique({ where: { email: normEmail } });
-    if (!user) return; // respuesta uniforme
-
-    const raw = randomBytes(32).toString('hex');
-    await this.prisma.passwordResetToken.create({
-      data: { userId: user.id, tokenHash: sha256(raw), expiresAt: new Date(Date.now() + RESET_TTL_MS) },
-    });
-    // Un fallo de SMTP no debe tumbar la petición ni revelar que el correo
-    // existe: se registra y se responde igual (respuesta uniforme).
-    try {
-      await this.email.sendPasswordReset(normEmail, raw);
-    } catch (err) {
-      this.logger.error(`No se pudo enviar el correo de recuperación: ${String(err)}`);
-    }
-  }
-
-  /** Aplica el reset: valida token, cambia contraseña, invalida sesiones. */
-  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
-    const tokenHash = sha256(rawToken);
-    const token = await this.prisma.passwordResetToken.findUnique({ where: { tokenHash } });
-    if (!token || token.usedAt || token.expiresAt < new Date()) {
-      throw new UnauthorizedException('El enlace es inválido o ha expirado.');
-    }
-    const passwordHash = await argon2.hash(newPassword, { type: argon2.argon2id });
-    await this.prisma.$transaction([
-      this.prisma.user.update({ where: { id: token.userId }, data: { passwordHash } }),
-      this.prisma.passwordResetToken.update({ where: { tokenHash }, data: { usedAt: new Date() } }),
-      // Revoca todas las sesiones activas por seguridad.
-      this.prisma.refreshToken.updateMany({ where: { userId: token.userId, revokedAt: null }, data: { revokedAt: new Date() } }),
-    ]);
-    this.logger.log(`Contraseña restablecida para userId=${token.userId}`);
   }
 }
