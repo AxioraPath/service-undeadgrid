@@ -48,7 +48,7 @@ import { RoomService } from './room.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolvePlayerName } from './resolve-player-name';
 import { AuthService } from '../auth/auth.service';
-import { MatchStatsService } from '../stats/match-stats.service';
+import { MatchStatsService, matchXpBySlot } from '../stats/match-stats.service';
 
 type AppServer = Server<
   ClientToServerEvents,
@@ -114,7 +114,7 @@ export class RoomGateway
     };
     this.orchestrator.onMatchOver = (room) => {
       this.emitState(room);
-      this.server.to(room.code).emit('match:over', room.toSnapshot(this.rooms.now()));
+      this.server.to(room.code).emit('match:over', { ...room.toSnapshot(this.rooms.now()), xp: matchXpBySlot(room) });
       // Persistir resultado + estadísticas (no bloquea el flujo del juego).
       void this.matchStats.persistMatch(room);
     };

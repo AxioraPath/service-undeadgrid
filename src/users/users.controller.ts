@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Patch, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { IsOptional, IsString, MaxLength, MinLength } from 'class-validator';
 import { JwtAuthGuard, type AuthedRequest } from '../auth/jwt-auth.guard';
 import { UsersService } from './users.service';
@@ -29,6 +29,17 @@ export class UsersController {
   @Get('stats')
   stats(@Req() req: AuthedRequest) {
     return this.users.getStats(req.user!.sub);
+  }
+
+  @Get('missions')
+  missions(@Req() req: AuthedRequest) {
+    return this.users.getMissions(req.user!.sub);
+  }
+
+  @Post('missions/:key/claim')
+  @HttpCode(200)
+  claim(@Req() req: AuthedRequest, @Param('key') key: string) {
+    return this.users.claimMission(req.user!.sub, key);
   }
 
   @Patch()

@@ -25,6 +25,7 @@ model User {
   profile       PlayerProfile?
   stats         PlayerStats?
   refreshTokens RefreshToken[]
+  missions      UserMission[]
 
   @@map("users")
 }
@@ -117,4 +118,23 @@ model RefreshToken {
 
   @@index([userId])
   @@map("refresh_tokens")
+}
+
+/// Progreso de una misión (diaria o permanente) de un usuario.
+/// periodKey: 'YYYY-MM-DD' (UTC) para diarias, 'all' para hitos permanentes.
+model UserMission {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  missionKey  String
+  periodKey   String
+  progress    Int       @default(0)
+  completedAt DateTime?
+  claimedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([userId, missionKey, periodKey])
+  @@index([userId])
+  @@map("user_missions")
 }

@@ -82,7 +82,7 @@ export interface ServerToClientEvents {
   /** Tick de reloj de combate (1 Hz). */
   'combat:tick': (data: CombatSnapshot) => void;
   /** La partida terminó. */
-  'match:over': (room: RoomSnapshot) => void;
+  'match:over': (room: RoomSnapshot & { xp?: Record<number, number> }) => void;
   /** Estado de la simulación, 30 veces por segundo durante el combate. */
   'game:state': (state: GameStateDto) => void;
 }

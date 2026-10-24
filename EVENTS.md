@@ -172,7 +172,7 @@ Medición de latencia una vez conectado el socket.
 | `chat:message`             | `ChatMessageSnapshot`                               | Nuevo mensaje de chat.                   |
 | `combat:phase`             | `CombatSnapshot`                                    | Cambio de fase de combate.               |
 | `combat:tick`              | `CombatSnapshot`                                    | Tick de reloj de combate (1 Hz).         |
-| `match:over`               | `RoomSnapshot`                                      | Fin de la partida.                       |
+| `match:over`               | `RoomSnapshot & { xp?: { [slot]: number } }`                                    | Fin de la partida.                       |
 | `game:state`               | `GameStateDto`                                      | Estado de la simulación, 30 veces por segundo en combate. |
 
 ---

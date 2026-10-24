@@ -8,6 +8,7 @@ import { RoomModule } from './room/room.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
+import { ProgressionModule } from './progression/progression.module';
 import { StatsModule } from './stats/stats.module';
 import { TestingModule } from './testing/testing.module';
 
@@ -37,6 +38,7 @@ const serveStatic = existsSync(CLIENT_DIR)
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
     AuthModule,
+    ProgressionModule,
     UsersModule,
     StatsModule,
     TestingModule,

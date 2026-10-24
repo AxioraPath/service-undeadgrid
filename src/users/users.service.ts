@@ -1,9 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { ProgressionService } from '../progression/progression.service';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly progression: ProgressionService,
+  ) {}
 
   /** Perfil público + datos de juego del usuario autenticado. */
   async getMe(userId: string) {
@@ -17,9 +21,20 @@ export class UsersService {
       email: user.email,
       displayName: user.displayName,
       createdAt: user.createdAt,
-      profile: user.profile,
+      profile: {
+        ...ProgressionService.profileView(user.profile ?? { level: 1, xp: 0 }),
+        preferredSurvivor: user.profile?.preferredSurvivor ?? 'explorador',
+      },
       stats: this.serializeStats(user.stats),
     };
+  }
+
+  getMissions(userId: string) {
+    return this.progression.getMissions(userId);
+  }
+
+  claimMission(userId: string, key: string) {
+    return this.progression.claim(userId, key);
   }
 
   async getStats(userId: string) {
