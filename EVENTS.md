@@ -131,14 +131,27 @@ Envía un mensaje de chat (se recorta a 120 caracteres).
 - **Payload:** `{ text: string }` · **Ack:** `Ack<ChatMessageSnapshot>`
 - **Push asociado:** `chat:message` a toda la sala.
 
-### `combat:coreDamage`
-Reporta daño al núcleo rival durante el combate (autoritativo-lite: el servidor
-aplica el daño, valida fase y objetivo, y resuelve la victoria).
+### `game:input`
+Estado de los controles del jugador durante el combate. El servidor guarda el
+**último** recibido y lo aplica en cada tick (30/s). El cliente lo manda al
+cambiar y como latido (~15/s). Un toque de acción entre dos ticks no se pierde.
 
-- **Payload:** `{ target: 1 | 2; amount: number }`
-- **Ack:** `Ack<CombatSnapshot>`
-- **Errores:** `BAD_STATE` (sin combate / fase de preparación), `NOT_ALLOWED` (tu propio núcleo).
-- **Push asociado:** `combat:tick`, o `match:over` si el núcleo llega a 0.
+- **Payload:** `{ seq: number; up: boolean; down: boolean; left: boolean; right: boolean; action: boolean }`
+- **Ack:** opcional, `Ack<void>` · **Errores:** `BAD_STATE` (sin combate), `VALIDATION`.
+
+### `game:command`
+Acciones discretas.
+
+- **Payload:** `{ type: 'hotbar'; slot: 1|2|3|4|5 }` (1 pistola, 2 escopeta, 3 botiquín,
+  4 pared, 5 trampa) o `{ type: 'crateTake'; item: 'wood'|'metal'|'medkits'|'shells' }`
+  (solo funciona parado sobre **tu** caja).
+- **Ack:** opcional, `Ack<void>`.
+
+### `game:sync`
+Mapa completo + estado actual. Se pide al entrar a la pantalla de partida o al
+recargar (válido en `combat` y `results`).
+
+- **Payload:** *(ninguno)* · **Ack:** `Ack<GameSyncData>` → `{ map: GameMapDto, state: GameStateDto }`
 
 ### `ping`
 Medición de latencia una vez conectado el socket.
@@ -160,6 +173,7 @@ Medición de latencia una vez conectado el socket.
 | `combat:phase`             | `CombatSnapshot`                                    | Cambio de fase de combate.               |
 | `combat:tick`              | `CombatSnapshot`                                    | Tick de reloj de combate (1 Hz).         |
 | `match:over`               | `RoomSnapshot`                                      | Fin de la partida.                       |
+| `game:state`               | `GameStateDto`                                      | Estado de la simulación, 30 veces por segundo en combate. |
 
 ---
 
@@ -170,7 +184,7 @@ Medición de latencia una vez conectado el socket.
 {
   code: string
   status: 'lobby' | 'selection' | 'preparation' | 'combat' | 'results'
-  seed: number            // semilla del mapa; el cliente genera el mapa con mapgen.ts
+  seed: number            // semilla del mapa (el servidor lo genera; el cliente lo recibe en game:sync)
   mapId: string
   difficulty: string
   hostSlot: 1 | 2
@@ -193,6 +207,20 @@ Medición de latencia una vez conectado el socket.
 ```ts
 { elapsed: number; phase: 'prep'|'wave1'|'wave2'|'horde'; wave: number; cores: { 1: number; 2: number } }
 ```
+
+### `GameStateDto` (ver `src/contracts/game.ts`)
+```ts
+{ tick, time, phase: { id, label, start, end, wave }, maxWave,
+  players: GamePlayerDto[],          // posición, vida, arma, inventario, kills, buildHint…
+  zombies: [id, x, y, hp, maxHp, kind, attackAt, hurtAt][],   // kind 0 normal · 1 rápido · 2 tanque
+  bullets: [id, x, y, vx, vy][],
+  structures: [casilla, tipo, hp, maxHp, dueño][],            // tipo 0 madera · 1 reforzada · 2 trampa
+  cores: { 1, 2 }, crates: { 1: Stock, 2: Stock },
+  events: GameEventDto[],            // disparos, golpes, muertes… (efectos visuales)
+  result: { winner: 0|1|2, reason, durationS, byTime } | null }
+```
+Las posiciones están en casillas (1 casilla = 32 px lógicos). El cliente interpola
+entre los dos últimos estados y nunca decide posición, vida, daño ni inventario.
 
 ### `ChatMessageSnapshot`
 ```ts

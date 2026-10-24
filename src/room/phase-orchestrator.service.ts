@@ -1,13 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { LIFECYCLE, PHASE_TICK_MS } from '../config/game.config';
+import { LIFECYCLE, PHASE_TICK_MS, SIM_TICK_MS } from '../config/game.config';
+import type { GameStateDto } from '../contracts';
+import { encodeState } from '../game/snapshot';
 import type { Room } from '../domain/room';
 import { RoomService } from './room.service';
 
 /**
  * Orquesta el avance de fases/combate de forma AUTORITATIVA en el servidor.
  * El gateway registra callbacks para emitir por red; este servicio no conoce
- * Socket.IO. Mantiene un único temporizador global de 1 Hz que recorre todas
- * las salas en combate, además del barrido de limpieza.
+ * Socket.IO. Mantiene un único bucle de simulación a 30 ticks/s que recorre todas
+ * las salas en combate (estado del juego cada tick, reloj cada segundo), además
+ * del barrido de limpieza.
  */
 @Injectable()
 export class PhaseOrchestrator {
@@ -17,18 +20,21 @@ export class PhaseOrchestrator {
 
   /** Temporizadores de arranque de combate por sala (preparation → combat). */
   private readonly startTimers = new Map<string, NodeJS.Timeout>();
+  /** Último segundo de reloj emitido por sala (combat:tick a 1 Hz). */
+  private readonly lastClock = new Map<string, number>();
 
   constructor(private readonly rooms: RoomService) {}
 
   /** Callbacks que inyecta el gateway para emitir por red. */
   onCombatTick: (room: Room) => void = () => {};
+  onGameState: (room: Room, state: GameStateDto) => void = () => {};
   onPhaseChange: (room: Room) => void = () => {};
   onMatchOver: (room: Room) => void = () => {};
   onRoomsClosed: (codes: string[], expired: Room[]) => void = () => {};
 
   start(): void {
     if (!this.combatTimer) {
-      this.combatTimer = setInterval(() => this.tickAll(), PHASE_TICK_MS);
+      this.combatTimer = setInterval(() => this.tickAll(), SIM_TICK_MS);
       // No bloquear el cierre del proceso por estos timers.
       this.combatTimer.unref?.();
     }
@@ -74,14 +80,23 @@ export class PhaseOrchestrator {
 
   private tickAll(): void {
     for (const room of this.rooms.all()) {
-      if (room.status !== 'combat') continue;
-      const { phaseChanged, finished } = this.rooms.tickCombat(room);
+      if (room.status !== 'combat' || !room.match) {
+        this.lastClock.delete(room.code);
+        continue;
+      }
+      const { stepped, phaseChanged, finished } = this.rooms.tickCombat(room);
+      if (stepped || finished) this.onGameState(room, encodeState(room.match));
       if (finished) {
+        this.lastClock.delete(room.code);
         this.onMatchOver(room);
         continue;
       }
       if (phaseChanged) this.onPhaseChange(room);
-      this.onCombatTick(room);
+      const second = Math.floor((room.match.time * 1000) / PHASE_TICK_MS);
+      if (second !== this.lastClock.get(room.code)) {
+        this.lastClock.set(room.code, second);
+        this.onCombatTick(room);
+      }
     }
   }
 

@@ -2,7 +2,6 @@ import type { Slot } from '../config/game.config';
 import type { Ack } from './common';
 import type {
   ChatSendPayload,
-  CoreDamagePayload,
   CreateRoomPayload,
   JoinRoomPayload,
   ReadyPayload,
@@ -11,6 +10,7 @@ import type {
   SetDifficultyPayload,
   SetMapPayload,
 } from './payloads';
+import type { GameCommandPayload, GameInputPayload, GameStateDto, GameSyncData } from './game';
 import type {
   ChatMessageSnapshot,
   CombatSnapshot,
@@ -52,10 +52,12 @@ export interface ClientToServerEvents {
   ) => void;
   'lobby:start': (ack: (r: Ack<RoomSnapshot>) => void) => void;
   'chat:send': (p: ChatSendPayload, ack: (r: Ack<ChatMessageSnapshot>) => void) => void;
-  'combat:coreDamage': (
-    p: CoreDamagePayload,
-    ack: (r: Ack<CombatSnapshot>) => void,
-  ) => void;
+  /** Controles del jugador (el servidor guarda el último). Sin respuesta para no gastar red. */
+  'game:input': (p: GameInputPayload, ack?: (r: Ack) => void) => void;
+  /** Barra rápida (1-5) o sacar de la caja propia. */
+  'game:command': (p: GameCommandPayload, ack?: (r: Ack) => void) => void;
+  /** Mapa + estado completo al entrar o volver a la partida. */
+  'game:sync': (ack: (r: Ack<GameSyncData>) => void) => void;
   ping: (p: { t?: number } | undefined, ack: (r: Ack<{ t: number }>) => void) => void;
 }
 
@@ -81,6 +83,8 @@ export interface ServerToClientEvents {
   'combat:tick': (data: CombatSnapshot) => void;
   /** La partida terminó. */
   'match:over': (room: RoomSnapshot) => void;
+  /** Estado de la simulación, 30 veces por segundo durante el combate. */
+  'game:state': (state: GameStateDto) => void;
 }
 
 /** Datos por-socket (namespace de datos del lado servidor). */

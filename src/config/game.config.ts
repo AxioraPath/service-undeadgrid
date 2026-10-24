@@ -1,11 +1,9 @@
 /**
  * Configuración centralizada y PROVISIONAL del juego.
  *
- * Estos valores son un espejo de `undeadgrid-web-app/src/game/constants.ts`
- * y de `.../modules/Lobby/data/catalog.ts`. El servidor es autoritativo sobre
- * las SALAS y las FASES; la simulación de combate sigue viviendo en el cliente
- * (engine.ts) por ahora, por lo que aquí solo se centraliza lo que el servidor
- * necesita para orquestar el flujo 1v1 y para enviar snapshots coherentes.
+ * Las reglas de la partida viven en `src/game` (motor autoritativo). Aquí se
+ * centraliza lo que el servidor necesita para orquestar el flujo 1v1 (salas,
+ * límites, catálogo del lobby, rate limits y tiempos de vida).
  *
  * REGLA: no inventar reglas de balance aquí. Si un valor difiere del frontend,
  * es un bug. Cuando el equipo defina balance real, se actualiza en ambos lados
@@ -51,33 +49,16 @@ export const MAP_IDS = ['ciudad-abandonada', 'desierto-ferroviario', 'distrito-i
 export const DIFFICULTIES = ['Estándar', 'Difícil'] as const;
 
 /**
- * Fases de la partida (espeja PHASES y MATCH_DURATION de constants.ts).
- * El servidor avanza estas fases de forma autoritativa por tiempo.
- * wave 0 = preparación (sin zombis ni PvP).
+ * Fases, duración y vida del núcleo: vienen del motor de la partida (src/game),
+ * que es la única fuente de las reglas.
  */
-export interface PhaseDef {
-  id: 'prep' | 'wave1' | 'wave2' | 'horde';
-  label: string;
-  start: number; // segundos desde el inicio del combate
-  end: number;
-  wave: number;
-}
-
-export const PHASES: readonly PhaseDef[] = [
-  { id: 'prep', label: 'Fase de preparación', start: 0, end: 60, wave: 0 },
-  { id: 'wave1', label: 'Oleada 1', start: 60, end: 120, wave: 1 },
-  { id: 'wave2', label: 'Oleada 2', start: 120, end: 180, wave: 2 },
-  { id: 'horde', label: 'Horda final', start: 180, end: 240, wave: 3 },
-];
-
-/** Duración total del combate en segundos (espeja MATCH_DURATION). */
-export const MATCH_DURATION = 240;
-
-/** Vida del núcleo (espeja CORE_HP). Destruir el núcleo rival = victoria. */
-export const CORE_HP = 500;
+export { CORE_HP, MATCH_DURATION, PHASES, type PhaseDef } from '../game/constants';
 
 /** Ritmo con el que el servidor emite el tick de fase/reloj de combate. */
 export const PHASE_TICK_MS = 1000;
+
+/** Bucle de simulación: 30 ticks por segundo (ver TICK_RATE en src/game/constants). */
+export const SIM_TICK_MS = 1000 / 30;
 
 /**
  * Rate limiting por socket y por tipo de evento (ventana deslizante simple).
@@ -99,6 +80,10 @@ export const RATE_LIMITS = {
   'chat:send': { points: 10, windowMs: 5_000 },
   // ping de latencia
   ping: { points: 60, windowMs: 10_000 },
+  // partida: el cliente manda su input al cambiar y como latido (~15/s)
+  'game:input': { points: 600, windowMs: 10_000 },
+  'game:command': { points: 100, windowMs: 10_000 },
+  'game:sync': { points: 20, windowMs: 10_000 },
   // fallback para cualquier evento no listado
   default: { points: 30, windowMs: 10_000 },
 } as const;

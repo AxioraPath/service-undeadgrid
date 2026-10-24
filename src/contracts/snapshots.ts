@@ -49,7 +49,7 @@ export interface CombatSnapshot {
 export interface RoomSnapshot {
   code: string;
   status: RoomStatus;
-  /** Semilla determinista del mapa (el cliente genera el mapa con mapgen.ts). */
+  /** Semilla determinista del mapa (el servidor lo genera y lo manda en game:sync). */
   seed: number;
   mapId: string;
   difficulty: string;

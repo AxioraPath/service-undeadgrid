@@ -21,6 +21,9 @@ import {
   type ChatMessageSnapshot,
   type ClientToServerEvents,
   type CombatSnapshot,
+  type GameSyncData,
+  gameCommandSchema,
+  gameInputSchema,
   type InterServerEvents,
   type JoinedData,
   type RoomSnapshot,
@@ -29,7 +32,6 @@ import {
 } from '../contracts';
 import {
   chatSendSchema,
-  coreDamageSchema,
   createRoomSchema,
   joinRoomSchema,
   readySchema,
@@ -98,6 +100,7 @@ export class RoomGateway
   afterInit(): void {
     // El orquestador emite por red a través de estos callbacks.
     this.orchestrator.onCombatTick = (room) => this.emitCombat(room, 'combat:tick');
+    this.orchestrator.onGameState = (room, state) => this.server.to(room.code).emit('game:state', state);
     this.orchestrator.onPhaseChange = (room) => {
       this.emitState(room);
       this.emitCombat(room, 'combat:phase');
@@ -414,22 +417,36 @@ export class RoomGateway
     });
   }
 
-  @SubscribeMessage('combat:coreDamage')
-  async onCoreDamage(
+  @SubscribeMessage('game:input')
+  async onGameInput(
     @ConnectedSocket() client: AppSocket,
     @MessageBody() body: unknown,
-  ): Promise<Ack<CombatSnapshot>> {
-    return this.handle(client, 'combat:coreDamage', () => {
+  ): Promise<Ack> {
+    return this.handle(client, 'game:input', () => {
       const code = this.requireRoomCode(client);
-      const payload = this.parse(coreDamageSchema, body);
-      const room = this.rooms.coreDamage(code, client.id, payload.target, payload.amount);
-      if (room.status === 'results') {
-        this.emitState(room);
-        this.server.to(code).emit('match:over', room.toSnapshot(this.now()));
-      } else {
-        this.emitCombat(room, 'combat:tick');
-      }
-      return room.combatSnapshot(this.now());
+      const { up, down, left, right, action } = this.parse(gameInputSchema, body);
+      this.rooms.input(code, client.id, { up, down, left, right, action });
+      return undefined;
+    });
+  }
+
+  @SubscribeMessage('game:command')
+  async onGameCommand(
+    @ConnectedSocket() client: AppSocket,
+    @MessageBody() body: unknown,
+  ): Promise<Ack> {
+    return this.handle(client, 'game:command', () => {
+      const code = this.requireRoomCode(client);
+      this.rooms.command(code, client.id, this.parse(gameCommandSchema, body));
+      return undefined;
+    });
+  }
+
+  @SubscribeMessage('game:sync')
+  async onGameSync(@ConnectedSocket() client: AppSocket): Promise<Ack<GameSyncData>> {
+    return this.handle(client, 'game:sync', () => {
+      const code = this.requireRoomCode(client);
+      return this.rooms.sync(code, client.id);
     });
   }
 

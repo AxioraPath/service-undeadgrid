@@ -19,11 +19,12 @@ El servidor es autoritativo sobre:
 - **Ciclo de vida:** desconexión, reconexión, abandono y limpieza de salas
   vacías/huérfanas.
 
-La **simulación de combate** (movimiento, zombis, balas, construcción) sigue
-viviendo en el cliente (`undeadgrid-web-app/src/game/engine.ts`). El mapa se
-genera de forma determinista a partir de una **semilla** (`seed`) que el servidor
-asigna a la sala y el cliente expande con `mapgen.ts`. El daño al núcleo se
-reporta al servidor, que lo aplica de forma autoritativa.
+- **Simulación de combate (src/game):** el servidor corre la partida completa a
+  30 ticks/s: movimiento con colisiones, disparos, zombis y oleadas, construcción,
+  trampas, caja de suministros, recompensas, reaparición y victoria. El mapa se
+  genera con la semilla de la sala. El cliente solo manda `game:input` /
+  `game:command` y dibuja lo que llega en `game:state`; editar valores en el
+  navegador no cambia nada en la partida.
 
 > No hay base de datos ni autenticación: el juego es efímero y el estado vive en
 > memoria. No se añaden por no existir una necesidad actual.
@@ -84,10 +85,17 @@ src/
   domain/
     player.ts                  Entidad Player
     room.ts                    Entidad Room + máquina de estados + reloj
+  game/                        Reglas y simulación de la partida (TS puro, sin Nest)
+    constants.ts               Valores de la sección 5 (vidas, daños, costos, fases)
+    formulas.ts                Escalado por oleada, daño, curación, interpolación
+    mapgen.ts                  Mapa 32×24 por semilla + validación BFS
+    engine.ts                  Tick de la partida (inputs → mundo → victoria)
+    snapshot.ts                Mapa y estado que viajan al cliente
+    game.spec.ts               Pruebas unitarias de las reglas
   room/
     room.service.ts            Lógica de negocio autoritativa
     room.gateway.ts            Gateway Socket.IO (validación, acks, rate limit)
-    phase-orchestrator.service.ts  Timers 1 Hz: avance de fases y barrido
+    phase-orchestrator.service.ts  Bucle de 30 ticks/s (game:state), reloj 1 Hz y barrido
     room.module.ts
     room.service.spec.ts       Test de humo del flujo 1v1
   common/
@@ -120,9 +128,5 @@ equipo las defina, se actualizan en ambos lados.
 
 ## Pendiente / próximos pasos
 
-- Reemplazar en el frontend el mock `useLobbyRoom` por un cliente Socket.IO real
-  que consuma estos eventos (los contratos ya están alineados con ese hook).
-- Simulación de combate del lado servidor si se quiere anti-cheat completo
-  (hoy el núcleo es autoritativo pero el resto del combate es cliente).
 - Store compartido (Redis) y adaptador de Socket.IO para escalado multi-nodo.
 - Persistencia opcional de estadísticas (requiere introducir una base de datos).

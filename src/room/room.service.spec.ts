@@ -4,8 +4,8 @@ import { CORE_HP, MATCH_DURATION } from '../config/game.config';
 
 /**
  * Test de humo del servicio autoritativo de salas. Cubre el flujo completo:
- * crear → unir → listo → start → selección → confirmación → combate →
- * daño al núcleo → victoria, además de validaciones y reconexión.
+ * crear → unir → listo → start → selección → confirmación → combate simulado
+ * en el servidor → victoria, además de validaciones y reconexión.
  *
  * Se controla el reloj (`now`) para hacer el combate determinista.
  */
@@ -73,56 +73,91 @@ describe('RoomService (flujo 1v1)', () => {
     expect(room.status).toBe('preparation');
   });
 
-  it('corre el combate y gana quien destruye el núcleo rival', () => {
-    const { room } = svc.create({ name: 'Ana', socketId: 's1' });
-    svc.join({ code: room.code, name: 'Bob', socketId: 's2' });
+  /** Lleva una sala nueva hasta el combate y devuelve la sala. */
+  const startMatch = () => {
+    const { room } = svc.create({ name: 'Ana', socketId: 's1', survivor: 'explorador' });
+    svc.join({ code: room.code, name: 'Bob', socketId: 's2', survivor: 'mecanica' });
     svc.setReady(room.code, 's1', true);
     svc.setReady(room.code, 's2', true);
     svc.start(room.code, 's1');
     svc.confirmSurvivor(room.code, 's1');
     svc.confirmSurvivor(room.code, 's2');
-
     svc.beginCombat(room);
+    return room;
+  };
+
+  it('el servidor simula el combate a 30 ticks por segundo', () => {
+    const room = startMatch();
     expect(room.status).toBe('combat');
-    expect(room.cores[2]).toBe(CORE_HP);
+    expect(room.match).not.toBeNull();
 
-    // Durante la preparación interna (wave 0) el núcleo es invulnerable.
-    expect(() => svc.coreDamage(room.code, 's1', 2, 50)).toThrow(/invulnerable/i);
+    advance(1000);
+    const { stepped } = svc.tickCombat(room);
+    expect(stepped).toBe(30);
+    expect(room.match!.time).toBeCloseTo(1, 5);
+  });
 
-    // Avanza a la oleada 1 (a los 60 s).
+  it('mueve al jugador con su input sin pasar la velocidad máxima', () => {
+    const room = startMatch();
+    const ana = room.match!.players.find((p) => p.slot === 1)!;
+    const x0 = ana.x;
+
+    // Aunque el cliente mande el input muchas veces, el servidor aplica la velocidad del motor.
+    for (let i = 0; i < 50; i++) {
+      svc.input(room.code, 's1', { up: false, down: false, left: false, right: true, action: false });
+    }
+    advance(500);
+    svc.tickCombat(room);
+
+    const moved = ana.x - x0;
+    expect(moved).toBeGreaterThan(0);
+    expect(moved).toBeLessThanOrEqual(4 * 0.5 + 1e-6); // 4 casillas/s durante 0.5 s
+  });
+
+  it('gana quien destruye el núcleo rival y elimina al enemigo', () => {
+    const room = startMatch();
     advance(61_000);
     svc.tickCombat(room);
 
-    // No puede dañar su propio núcleo.
-    expect(() => svc.coreDamage(room.code, 's1', 1, 50)).toThrow(/propio/i);
+    const match = room.match!;
+    match.cores[2].hp = 0;
+    const bob = match.players.find((p) => p.slot === 2)!;
+    bob.alive = false;
+    bob.respawnAt = null;
 
-    // Ana (slot 1) destruye el núcleo de Bob (slot 2).
-    svc.coreDamage(room.code, 's1', 2, CORE_HP);
+    advance(100);
+    const { finished } = svc.tickCombat(room);
+    expect(finished).toBe(true);
     expect(room.status).toBe('results');
     expect(room.result?.winner).toBe(1);
     expect(room.result?.reason).toBe('core_destroyed');
   });
 
   it('termina por tiempo con victoria del núcleo con más vida', () => {
-    const { room } = svc.create({ name: 'Ana', socketId: 's1' });
-    svc.join({ code: room.code, name: 'Bob', socketId: 's2' });
-    svc.setReady(room.code, 's1', true);
-    svc.setReady(room.code, 's2', true);
-    svc.start(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's2');
-    svc.beginCombat(room);
-
+    const room = startMatch();
     advance(61_000);
     svc.tickCombat(room);
-    svc.coreDamage(room.code, 's1', 2, 100); // núcleo 2 queda con menos vida
+    room.match!.cores[2].hp = 400; // núcleo 2 queda con menos vida
 
-    advance(MATCH_DURATION * 1000);
-    const { finished } = svc.tickCombat(room);
+    // El bucle real avanza cada 33 ms; aquí se avanza de segundo en segundo.
+    let finished = false;
+    for (let t = 0; t < MATCH_DURATION && !finished; t++) {
+      room.match!.zombies.length = 0; // sin zombis: solo se prueba la regla del tiempo
+      advance(1000);
+      finished = svc.tickCombat(room).finished;
+    }
     expect(finished).toBe(true);
     expect(room.status).toBe('results');
     expect(room.result?.reason).toBe('time_out');
     expect(room.result?.winner).toBe(1);
+    expect(room.cores[2]).toBeLessThan(CORE_HP);
+  });
+
+  it('rechaza inputs fuera del combate', () => {
+    const { room } = svc.create({ name: 'Ana', socketId: 's1' });
+    expect(() =>
+      svc.input(room.code, 's1', { up: true, down: false, left: false, right: false, action: false }),
+    ).toThrow(/combate/i);
   });
 
   it('reconecta a un asiento desconectado durante el combate', () => {

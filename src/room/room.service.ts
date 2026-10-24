@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   LIFECYCLE,
-  MATCH_DURATION,
   ROOM_CAPACITY,
   type Slot,
 } from '../config/game.config';
@@ -9,7 +8,16 @@ import { ErrorCode, type MatchResult } from '../contracts';
 import { DomainError } from '../common/domain-error';
 import { newSessionId, randomRoomCode, randomSeed } from '../common/ids';
 import { Player } from '../domain/player';
-import { Room, phaseAt } from '../domain/room';
+import { Room } from '../domain/room';
+import { TICK_DT } from '../game/constants';
+import { createMatch, phaseOf, step, ticksFor, type Command, type PlayerInput } from '../game/engine';
+import { encodeMap, encodeState } from '../game/snapshot';
+import type { GameSyncData } from '../contracts';
+
+const IDLE: PlayerInput = { up: false, down: false, left: false, right: false, action: false };
+
+/** Máximo de ticks que se simulan de golpe (si el proceso se atrasa, no se intenta recuperar de más). */
+const MAX_CATCH_UP_TICKS = 15;
 
 /** Resultado de un alta/reingreso en una sala. */
 export interface JoinOutcome {
@@ -261,60 +269,96 @@ export class RoomService {
   beginCombat(room: Room): void {
     if (room.status !== 'preparation') return;
     room.transition('combat');
+    room.match = createMatch({
+      seed: room.seed,
+      players: [...room.players.values()].map((p) => ({
+        id: p.sessionId,
+        slot: p.slot,
+        name: p.name,
+        survivor: p.survivor,
+      })),
+    });
+    room.inputs.clear();
+    room.actionTaps.clear();
+    room.commands = [];
     room.startCombat(this.now());
     this.logger.log(`Sala ${room.code}: combate iniciado (seed ${room.seed})`);
   }
 
-  /**
-   * Aplica daño autoritativo al núcleo rival reportado por un cliente.
-   * Si el núcleo llega a 0, cierra la partida con victoria del atacante.
-   */
-  coreDamage(code: string, socketId: string, target: Slot, amount: number): Room {
+  // ---- Simulación ----
+
+  private requireMatch(code: string, socketId: string) {
     const { room, player } = this.playerInRoom(code, socketId);
-    if (room.status !== 'combat') {
+    if (room.status !== 'combat' || !room.match) {
       throw new DomainError(ErrorCode.BAD_STATE, 'No hay combate en curso');
     }
-    // Un jugador no puede dañar su propio núcleo.
-    if (player.slot === target) {
-      throw new DomainError(ErrorCode.NOT_ALLOWED, 'No puedes dañar tu propio núcleo');
+    return { room, player, match: room.match };
+  }
+
+  /** Guarda el último estado de los controles del jugador; el siguiente tick lo aplica. */
+  input(code: string, socketId: string, input: PlayerInput): void {
+    const { room, player } = this.requireMatch(code, socketId);
+    room.inputs.set(player.sessionId, input);
+    if (input.action) room.actionTaps.add(player.sessionId);
+  }
+
+  /** Encola un comando discreto (barra rápida o caja) para el siguiente tick. */
+  command(code: string, socketId: string, cmd: Command): void {
+    const { room, player } = this.requireMatch(code, socketId);
+    if (room.commands.length < 50) room.commands.push({ playerId: player.sessionId, cmd });
+  }
+
+  /** Mapa y estado completos, para entrar (o volver tras recargar) a la partida. */
+  sync(code: string, socketId: string): GameSyncData {
+    const { room } = this.playerInRoom(code, socketId);
+    if (!room.match || (room.status !== 'combat' && room.status !== 'results')) {
+      throw new DomainError(ErrorCode.BAD_STATE, 'No hay combate en curso');
     }
-    // Solo durante fases con PvP/zombis (no en preparación interna).
-    const phase = phaseAt(room.elapsed(this.now()));
-    if (phase.wave === 0) {
-      throw new DomainError(ErrorCode.BAD_STATE, 'El núcleo es invulnerable en preparación');
-    }
-    const destroyed = room.damageCore(target, amount);
-    if (destroyed) {
-      const winner: Slot = player.slot;
-      this.finish(room, { winner, reason: 'core_destroyed', cores: { ...room.cores } });
-    }
-    return room;
+    return { map: encodeMap(room.match), state: encodeState(room.match, false) };
   }
 
   /**
-   * Avanza el reloj de combate. Devuelve si hubo CAMBIO DE FASE y si terminó por
-   * tiempo. Lo llama el orquestador cada segundo.
+   * Avanza la simulación a paso fijo hasta el tiempo real transcurrido. Devuelve
+   * cuántos ticks simuló, si cambió la fase y si terminó la partida.
    */
-  tickCombat(room: Room): { phaseChanged: boolean; finished: boolean } {
-    if (room.status !== 'combat') return { phaseChanged: false, finished: false };
-    const now = this.now();
-    const elapsed = room.elapsed(now);
-    const phase = phaseAt(elapsed);
+  tickCombat(room: Room): { stepped: number; phaseChanged: boolean; finished: boolean } {
+    const match = room.match;
+    if (room.status !== 'combat' || !match || room.combatStartedAt === null) {
+      return { stepped: 0, phaseChanged: false, finished: false };
+    }
+    const target = ticksFor((this.now() - room.combatStartedAt) / 1000);
+    let stepped = 0;
+    // Si el proceso se atrasó mucho, se descarta el tiempo perdido en lugar de simularlo todo.
+    if (target - match.ticks > MAX_CATCH_UP_TICKS * 20) {
+      match.ticks = target - MAX_CATCH_UP_TICKS;
+    }
+    while (match.ticks < target && !match.result) {
+      const inputs: Record<string, PlayerInput> = {};
+      for (const p of room.players.values()) {
+        const last = p.connected ? (room.inputs.get(p.sessionId) ?? IDLE) : IDLE;
+        inputs[p.sessionId] = room.actionTaps.has(p.sessionId) ? { ...last, action: true } : last;
+      }
+      room.actionTaps.clear();
+      step(match, inputs, room.commands.splice(0), TICK_DT);
+      stepped++;
+    }
+
+    room.cores = { 1: match.cores[1].hp, 2: match.cores[2].hp };
+    const phase = phaseOf(match);
     const phaseChanged = phase.id !== room.lastPhaseId;
     if (phaseChanged) room.lastPhaseId = phase.id;
+    if (stepped) room.touch();
 
-    if (elapsed >= MATCH_DURATION) {
-      // Tiempo agotado: gana quien tenga más vida de núcleo; empate si iguales.
-      const winner = this.coreLeader(room);
-      this.finish(room, { winner, reason: 'time_out', cores: { ...room.cores } });
-      return { phaseChanged, finished: true };
+    if (match.result) {
+      const { winner, byTime } = match.result;
+      this.finish(room, {
+        winner: winner === 0 ? null : winner,
+        reason: byTime ? 'time_out' : 'core_destroyed',
+        cores: { ...room.cores },
+      });
+      return { stepped, phaseChanged, finished: true };
     }
-    return { phaseChanged, finished: false };
-  }
-
-  private coreLeader(room: Room): Slot | null {
-    if (room.cores[1] === room.cores[2]) return null;
-    return room.cores[1] > room.cores[2] ? 1 : 2;
+    return { stepped, phaseChanged, finished: false };
   }
 
   finish(room: Room, result: MatchResult): void {

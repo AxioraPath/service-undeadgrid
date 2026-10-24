@@ -4,7 +4,6 @@ import {
   LIMITS,
   MAP_IDS,
   ROOM_CODE,
-  SLOTS,
   UNLOCKED_SURVIVORS,
 } from '../config/game.config';
 
@@ -44,8 +43,6 @@ export const mapIdSchema = z.enum(MAP_IDS as unknown as [string, ...string[]]);
 export const difficultySchema = z.enum(
   DIFFICULTIES as unknown as [string, ...string[]],
 );
-
-const slotSchema = z.union([z.literal(SLOTS[0]), z.literal(SLOTS[1])]);
 
 // ---- Payloads cliente → servidor ----
 
@@ -90,12 +87,5 @@ export const chatSendSchema = z.object({
     .refine((s) => s.length > 0, { message: 'El mensaje está vacío' }),
 });
 export type ChatSendPayload = z.infer<typeof chatSendSchema>;
-
-/** Daño autoritativo-lite: el cliente reporta impacto al núcleo rival. */
-export const coreDamageSchema = z.object({
-  target: slotSchema,
-  amount: z.number().int().positive().max(1000),
-});
-export type CoreDamagePayload = z.infer<typeof coreDamageSchema>;
 
 export const pingSchema = z.object({ t: z.number().optional() }).optional();

@@ -17,6 +17,7 @@ import type {
   RoomSnapshot,
   RoomStatus,
 } from '../contracts';
+import type { Command, MatchState, PlayerInput } from '../game/engine';
 import { Player } from './player';
 
 /** Transiciones permitidas de la máquina de estados de sala. */
@@ -52,8 +53,17 @@ export class Room {
   readonly players = new Map<Slot, Player>();
   readonly chat: ChatMessageSnapshot[] = [];
 
-  /** Vida de cada núcleo (autoritativa). */
+  /** Vida de cada núcleo (autoritativa; durante el combate se copia del motor). */
   cores: Record<Slot, number> = { 1: CORE_HP, 2: CORE_HP };
+
+  /** Simulación de la partida (src/game/engine). Existe desde que empieza el combate. */
+  match: MatchState | null = null;
+  /** Último input recibido de cada jugador (por sessionId). */
+  readonly inputs = new Map<string, PlayerInput>();
+  /** Toques de acción recibidos desde el último tick (para no perder un toque rápido). */
+  readonly actionTaps = new Set<string>();
+  /** Comandos pendientes de aplicar en el siguiente tick. */
+  commands: { playerId: string; cmd: Command }[] = [];
 
   /** Epoch ms del inicio del combate; null fuera de combate. */
   combatStartedAt: number | null = null;
@@ -191,6 +201,7 @@ export class Room {
 
   /** Segundos transcurridos de combate (acotado a MATCH_DURATION). */
   elapsed(now: number): number {
+    if (this.match) return Math.min(MATCH_DURATION, Math.floor(this.match.time));
     if (this.combatStartedAt === null) return 0;
     return Math.min(MATCH_DURATION, Math.floor((now - this.combatStartedAt) / 1000));
   }
