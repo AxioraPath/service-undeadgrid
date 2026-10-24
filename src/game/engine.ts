@@ -30,6 +30,8 @@ export interface PlayerInput {
   left: boolean
   right: boolean
   action: boolean
+  /** Optional aim vector (player -> mouse, world space). Sanitized by the engine; absent = legacy facing. */
+  aim?: { x: number; y: number }
 }
 
 /** Cantidad de ticks simulados (el servidor avanza a paso fijo de 1/30 s). */
@@ -50,6 +52,8 @@ export interface Player {
   py: number
   dirX: number
   dirY: number
+  /** Unit aim direction while the latest input carries a valid aim; null otherwise. */
+  aim: { x: number; y: number } | null
   hp: number
   alive: boolean
   respawnAt: number | null
@@ -199,6 +203,7 @@ export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
         py: sp.y,
         dirX: p.slot === 1 ? 1 : -1,
         dirY: 0,
+        aim: null,
         hp: PLAYER.maxHp,
         alive: true,
         respawnAt: null,
@@ -391,6 +396,28 @@ function tryBuild(s: MatchState, p: Player) {
   s.events.push({ type: 'built', x: pv.x, y: pv.y, what: pv.label })
 }
 
+const AIM_CLAMP = 1000
+const AIM_MIN_MAGNITUDE = 1e-3
+
+/** Validates an aim vector: finite, clamped, magnitude > 1e-3. Returns a unit vector or null (treated as absent). */
+export function sanitizeAim(aim: unknown): { x: number; y: number } | null {
+  if (!aim || typeof aim !== 'object') return null
+  const { x, y } = aim as { x?: unknown; y?: unknown }
+  if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y)) return null
+  const cx = Math.max(-AIM_CLAMP, Math.min(AIM_CLAMP, x))
+  const cy = Math.max(-AIM_CLAMP, Math.min(AIM_CLAMP, y))
+  const len = Math.hypot(cx, cy)
+  if (!(len > AIM_MIN_MAGNITUDE)) return null
+  return { x: cx / len, y: cy / len }
+}
+
+/** Quantizes a direction to the same 8 unit directions that movement produces. */
+export function quantizeFacing(x: number, y: number): { x: number; y: number } {
+  const a = Math.round(Math.atan2(y, x) / (Math.PI / 4)) * (Math.PI / 4)
+  const r = (v: number) => (Math.abs(v) < 1e-9 ? 0 : v)
+  return { x: r(Math.cos(a)), y: r(Math.sin(a)) }
+}
+
 function shoot(s: MatchState, p: Player) {
   const w = WEAPONS[p.weapon]
   if (w.usesShell) {
@@ -403,8 +430,9 @@ function shoot(s: MatchState, p: Player) {
   }
   p.fireCd = 1 / w.rate
   p.shotAt = s.time
+  // Shots follow the continuous aim when present; otherwise the (quantized) facing, as before.
   const len = Math.hypot(p.dirX, p.dirY) || 1
-  const base = Math.atan2(p.dirY / len, p.dirX / len)
+  const base = p.aim ? Math.atan2(p.aim.y, p.aim.x) : Math.atan2(p.dirY / len, p.dirX / len)
   for (let i = 0; i < w.pellets; i++) {
     const a = w.pellets === 1 ? base : base - w.spread / 2 + (w.spread * i) / (w.pellets - 1)
     const vx = Math.cos(a) * BULLET.speed
@@ -441,6 +469,7 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
       const sp = spawnPoint(s.map, p.slot)
       Object.assign(p, { x: sp.x, y: sp.y, px: sp.x, py: sp.y, hp: PLAYER.maxHp, alive: true, respawnAt: null })
     }
+    p.aim = null
     p.prevAction = input.action
     return
   }
@@ -448,12 +477,21 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
 
   let mx = (input.right ? 1 : 0) - (input.left ? 1 : 0)
   let my = (input.down ? 1 : 0) - (input.up ? 1 : 0)
+  // Aim (if valid) drives facing; movement keys then never change it.
+  p.aim = sanitizeAim(input.aim)
+  if (p.aim) {
+    const f = quantizeFacing(p.aim.x, p.aim.y)
+    p.dirX = f.x
+    p.dirY = f.y
+  }
   if (mx !== 0 || my !== 0) {
     const len = Math.hypot(mx, my)
     mx /= len
     my /= len
-    p.dirX = mx
-    p.dirY = my
+    if (!p.aim) {
+      p.dirX = mx
+      p.dirY = my
+    }
     // Velocidad máxima validada por el servidor: no depende de los FPS del cliente.
     moveEntity(s, p, mx * PLAYER.speed * dt, my * PLAYER.speed * dt, PLAYER.radius)
   }

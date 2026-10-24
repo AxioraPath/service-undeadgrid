@@ -45,6 +45,7 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
         y: r3(p.y),
         dirX: r3(p.dirX),
         dirY: r3(p.dirY),
+        ...(p.aim ? { aimX: r3(p.aim.x), aimY: r3(p.aim.y) } : {}),
         hp: p.hp,
         alive: p.alive,
         respawnIn: p.respawnAt !== null ? r3(Math.max(0, p.respawnAt - s.time)) : null,

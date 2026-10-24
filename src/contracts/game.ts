@@ -8,6 +8,26 @@ import type { Slot } from '../config/game.config';
 
 // ---- Cliente → servidor ----
 
+/** Aim limits: components are clamped to +-AIM_CLAMP; vectors shorter than AIM_MIN_MAGNITUDE are treated as absent. */
+export const AIM_CLAMP = 1000;
+export const AIM_MIN_MAGNITUDE = 1e-3;
+
+/**
+ * Optional aim direction (player -> mouse, world space). Not necessarily unit length; the server normalizes.
+ * Invalid values (non-finite, wrong type, ~zero vector) are dropped to `undefined` instead of rejecting
+ * the whole input, so movement keeps working.
+ */
+const aimInner = z
+  .object({ x: z.number().finite(), y: z.number().finite() })
+  .transform((a) => ({
+    x: Math.max(-AIM_CLAMP, Math.min(AIM_CLAMP, a.x)),
+    y: Math.max(-AIM_CLAMP, Math.min(AIM_CLAMP, a.y)),
+  }))
+  .refine((a) => Math.hypot(a.x, a.y) > AIM_MIN_MAGNITUDE)
+  .optional()
+  .catch(undefined);
+export const aimSchema = aimInner as unknown as z.ZodType<{ x: number; y: number } | undefined>;
+
 /** Estado de los controles del jugador. El servidor guarda el último recibido. */
 export const gameInputSchema = z.object({
   seq: z.number().int().nonnegative(),
@@ -16,6 +36,7 @@ export const gameInputSchema = z.object({
   left: z.boolean(),
   right: z.boolean(),
   action: z.boolean(),
+  aim: aimSchema,
 });
 export type GameInputPayload = z.infer<typeof gameInputSchema>;
 
@@ -70,6 +91,9 @@ export interface GamePlayerDto {
   y: number;
   dirX: number;
   dirY: number;
+  /** Continuous unit aim direction; present only while the player has a valid aim (otherwise omitted). */
+  aimX?: number;
+  aimY?: number;
   hp: number;
   alive: boolean;
   /** Segundos para reaparecer; null si no reaparece (núcleo destruido) o está vivo. */

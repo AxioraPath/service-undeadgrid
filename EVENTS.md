@@ -164,7 +164,14 @@ Estado de los controles del jugador durante el combate. El servidor guarda el
 **último** recibido y lo aplica en cada tick (30/s). El cliente lo manda al
 cambiar y como latido (~15/s). Un toque de acción entre dos ticks no se pierde.
 
-- **Payload:** `{ seq: number; up: boolean; down: boolean; left: boolean; right: boolean; action: boolean }`
+- **Payload:** `{ seq: number; up: boolean; down: boolean; left: boolean; right: boolean; action: boolean; aim?: { x: number; y: number } }`
+- **`aim`** (optional): direction vector from the player to the mouse in world space (any length;
+  the server normalizes). Invalid values (non-finite, ~zero magnitude <= 1e-3) are ignored as if absent;
+  components are clamped to +-1000. While a valid aim is present, shots (pistol and shotgun, pellets
+  centered on it) are fired along it, and `dirX/dirY` follow it quantized to 8 directions (movement keys
+  no longer change facing; wall orientation / build target follow the mouse). Send `aim` on every input
+  while aiming; omit it to return to movement-based facing. The snapshot player gets optional
+  `aimX/aimY` (unit vector, only present while aiming) for smooth sprite rendering.
 - **Ack:** opcional, `Ack<void>` · **Errores:** `BAD_STATE` (sin combate), `VALIDATION`.
 
 ### `game:command`

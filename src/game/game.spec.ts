@@ -1,6 +1,6 @@
 import { gameInputSchema } from '../contracts/game';
 import { MAP_H, MAP_W, PLAYER, STRUCTURES, WEAPONS } from './constants';
-import { createMatch, frontTile, previewBuild, step } from './engine';
+import { createMatch, frontTile, previewBuild, quantizeFacing, sanitizeAim, step } from './engine';
 import { encodeState } from './snapshot';
 import { applyDamage, clamp, heal, lerp, zombieCount, zombieDamage, zombieHp } from './formulas';
 import { generateMap, Ground, isMapReachable, Tile } from './mapgen';
@@ -164,5 +164,130 @@ describe('Wall orientation', () => {
     const t = frontTile(p);
     press(s);
     expect(s.structures.get(t.y * s.map.w + t.x)).toMatchObject({ type: 'trap', orient: 'h' });
+  });
+});
+
+describe('Mouse aiming', () => {
+  const idle = { up: false, down: false, left: false, right: false, action: false };
+  const mk = (seed = 5) => {
+    const s = createMatch({ seed, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'explorador' }] });
+    const p = s.players[0];
+    // Open spot in the middle of the player's base, away from walls.
+    const b = s.map.bases[1];
+    Object.assign(p, { x: b.x + b.w / 2, y: b.y + b.h / 2 });
+    return { s, p };
+  };
+  const fire = (aim?: { x: number; y: number }) => {
+    const { s, p } = mk();
+    // Leave the base so the action key shoots instead of building.
+    p.x = s.map.w / 2;
+    p.y = s.map.h / 2;
+    step(s, { a: { ...idle, action: true, aim } }, [], 1 / 30);
+    return { s, p };
+  };
+  const angleOf = (b: { vx: number; vy: number }) => Math.atan2(b.vy, b.vx);
+
+  it('aim overrides facing for the bullet direction', () => {
+    const { s } = fire({ x: 0, y: -3 });
+    expect(s.bullets).toHaveLength(1);
+    expect(angleOf(s.bullets[0])).toBeCloseTo(-Math.PI / 2, 5);
+  });
+
+  it('non-axis aim is continuous for bullets but quantized for facing', () => {
+    const { s, p } = fire({ x: 10, y: 4 });
+    expect(angleOf(s.bullets[0])).toBeCloseTo(Math.atan2(4, 10), 5);
+    expect(p.dirX).toBeCloseTo(1, 5);
+    expect(p.dirY).toBeCloseTo(0, 5);
+    expect(p.aim!.x).toBeCloseTo(10 / Math.hypot(10, 4), 5);
+  });
+
+  it('absent aim keeps the old behaviour (facing from slot default)', () => {
+    const { s, p } = fire(undefined);
+    expect(p.aim).toBeNull();
+    expect(angleOf(s.bullets[0])).toBeCloseTo(0, 5);
+  });
+
+  it('movement keys do not change facing while aiming', () => {
+    const { s, p } = mk();
+    step(s, { a: { ...idle, up: true, aim: { x: -1, y: 0 } } }, [], 1 / 30);
+    expect(p.dirX).toBeCloseTo(-1, 5);
+    expect(p.dirY).toBeCloseTo(0, 5);
+    step(s, { a: { ...idle, down: true, right: true, aim: { x: -1, y: 0 } } }, [], 1 / 30);
+    expect(p.dirX).toBeCloseTo(-1, 5);
+    // Without aim movement drives facing again.
+    step(s, { a: { ...idle, down: true } }, [], 1 / 30);
+    expect(p.dirY).toBeCloseTo(1, 5);
+  });
+
+  it('aim drives the build front tile', () => {
+    const { s, p } = mk();
+    step(s, { a: { ...idle, aim: { x: 0, y: -50 } } }, [], 1 / 30);
+    expect(frontTile(p)).toEqual({ x: Math.floor(p.x), y: Math.floor(p.y - PLAYER.radius) - 1 });
+  });
+
+  it.each([
+    [{ x: NaN, y: 1 }],
+    [{ x: 0, y: 0 }],
+    [{ x: 0.0005, y: 0 }],
+    [{ x: Infinity, y: 0 }],
+    [null],
+  ])('invalid aim %j is ignored', (aim) => {
+    expect(sanitizeAim(aim)).toBeNull();
+    const { s, p } = fire(aim as never);
+    expect(p.aim).toBeNull();
+    expect(angleOf(s.bullets[0])).toBeCloseTo(0, 5);
+  });
+
+  it('huge aim is clamped and normalized', () => {
+    const a = sanitizeAim({ x: 1e300, y: 0 })!;
+    expect(a.x).toBeCloseTo(1, 9);
+    expect(Math.hypot(a.x, a.y)).toBeCloseTo(1, 9);
+  });
+
+  it('zod keeps valid aim, clamps, and drops invalid aim without rejecting the input', () => {
+    const base = { seq: 1, ...idle };
+    expect(gameInputSchema.parse({ ...base, aim: { x: 3, y: 4 } }).aim).toEqual({ x: 3, y: 4 });
+    expect(gameInputSchema.parse({ ...base, aim: { x: 1e9, y: -1e9 } }).aim).toEqual({ x: 1000, y: -1000 });
+    expect(gameInputSchema.parse({ ...base, aim: { x: 0, y: 0 } }).aim).toBeUndefined();
+    expect(gameInputSchema.parse({ ...base, aim: { x: null, y: 1 } }).aim).toBeUndefined();
+    expect(gameInputSchema.parse({ ...base, aim: 'x' }).aim).toBeUndefined();
+    expect(gameInputSchema.parse(base).aim).toBeUndefined();
+  });
+
+  it('shotgun pellets are centered on the aim', () => {
+    const { s, p } = mk();
+    p.x = s.map.w / 2;
+    p.y = s.map.h / 2;
+    p.weapon = 'shotgun';
+    p.shells = 5;
+    const aim = { x: -2, y: 1 };
+    step(s, { a: { ...idle, action: true, aim } }, [], 1 / 30);
+    expect(s.bullets).toHaveLength(WEAPONS.shotgun.pellets);
+    const angles = s.bullets.map(angleOf);
+    const center = Math.atan2(1, -2);
+    expect((Math.min(...angles) + Math.max(...angles)) / 2).toBeCloseTo(center, 5);
+    expect(Math.max(...angles) - Math.min(...angles)).toBeCloseTo(WEAPONS.shotgun.spread, 5);
+    expect(p.shells).toBe(4);
+  });
+
+  it('is deterministic for the same seed and inputs and exposes aim in the snapshot only while aiming', () => {
+    const run = () => {
+      const { s } = mk(11);
+      for (let i = 0; i < 20; i++) step(s, { a: { ...idle, right: i % 2 === 0, action: true, aim: { x: Math.cos(i), y: Math.sin(i) } } }, [], 1 / 30);
+      return JSON.stringify(encodeState(s, false));
+    };
+    expect(run()).toBe(run());
+    const { s } = mk();
+    step(s, { a: { ...idle, aim: { x: 0, y: 2 } } }, [], 1 / 30);
+    expect(encodeState(s, false).players[0]).toMatchObject({ aimX: 0, aimY: 1 });
+    step(s, { a: idle }, [], 1 / 30);
+    expect('aimX' in encodeState(s, false).players[0]).toBe(false);
+  });
+
+  it('quantizeFacing returns the 8 movement directions', () => {
+    expect(quantizeFacing(1, 1).x).toBeCloseTo(Math.SQRT1_2, 9);
+    const f = quantizeFacing(-0.1, -5);
+    expect(f.x).toBeCloseTo(0, 9);
+    expect(f.y).toBeCloseTo(-1, 9);
   });
 });
