@@ -62,6 +62,8 @@ export class Room {
   readonly inputs = new Map<string, PlayerInput>();
   /** Toques de acción recibidos desde el último tick (para no perder un toque rápido). */
   readonly actionTaps = new Set<string>();
+  /** Igual para el disparo (`fire`): un clic rápido entre dos ticks no se pierde. */
+  readonly fireTaps = new Set<string>();
   /** Comandos pendientes de aplicar en el siguiente tick. */
   commands: { playerId: string; cmd: Command }[] = [];
 
@@ -243,6 +245,7 @@ export class Room {
     this.cores = { 1: CORE_HP, 2: CORE_HP };
     this.inputs.clear();
     this.actionTaps.clear();
+    this.fireTaps.clear();
     this.commands = [];
     this.rematch.clear();
   }

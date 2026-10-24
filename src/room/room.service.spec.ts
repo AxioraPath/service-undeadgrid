@@ -153,6 +153,19 @@ describe('RoomService (flujo 1v1)', () => {
     expect(room.cores[2]).toBeLessThan(CORE_HP);
   });
 
+  it('fire llega al motor y dispara dentro de la base, aunque el clic dure menos que un tick', () => {
+    const room = startMatch();
+    const ana = room.match!.players.find((p) => p.slot === 1)!;
+    // Clic muy rápido: fire=true y luego fire=false antes del siguiente tick.
+    svc.input(room.code, 's1', { up: false, down: false, left: false, right: false, action: false, fire: true });
+    svc.input(room.code, 's1', { up: false, down: false, left: false, right: false, action: false, fire: false });
+    advance(40);
+    svc.tickCombat(room);
+    expect(ana.shotAt).toBeGreaterThan(0);
+    expect(room.match!.bullets.length).toBeGreaterThan(0);
+    expect(room.match!.structures.size).toBe(0);
+  });
+
   it('rechaza inputs fuera del combate', () => {
     const { room } = svc.create({ name: 'Ana', socketId: 's1' });
     expect(() =>
