@@ -62,6 +62,8 @@ export interface Player {
   kills: number
   zombieKills: number
   deaths: number
+  /** Paredes y trampas colocadas o mejoradas (estadística). */
+  structuresBuilt: number
   fireCd: number
   prevAction: boolean
   timeAlive: number
@@ -203,6 +205,7 @@ export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
         kills: 0,
         zombieKills: 0,
         deaths: 0,
+        structuresBuilt: 0,
         fireCd: 0,
         prevAction: false,
         timeAlive: 0,
@@ -354,7 +357,8 @@ function tryBuild(s: MatchState, p: Player) {
   }
   const key = tileIndex(pv.x, pv.y)
   const st = s.structures.get(key)
-  if (st && st.type !== 'trap' && st.hp < st.maxHp) {
+  const repaired = !!st && st.type !== 'trap' && st.hp < st.maxHp
+  if (repaired) {
     p.wood -= STRUCTURES.repair.wood
     st.hp = Math.min(st.maxHp, st.hp + STRUCTURES.repair.hp)
   } else if (st?.type === 'wood') {
@@ -369,6 +373,7 @@ function tryBuild(s: MatchState, p: Player) {
     p.metal -= STRUCTURES.trap.metal
     s.structures.set(key, { type: 'trap', hp: 1, maxHp: 1, owner: p.slot })
   }
+  if (!repaired) p.structuresBuilt++
   s.events.push({ type: 'built', x: pv.x, y: pv.y, what: pv.label })
 }
 

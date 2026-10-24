@@ -1,26 +1,43 @@
+/** Agregados que la base de datos entrega en una sola pasada (ver TestingService.telemetry). */
 export interface TelemetryInput {
   totalMatches: number;
   avgDurationS: number | null;
+  avgMaxWave: number | null;
   /** Match count per end reason (core_destroyed | time_out | opponent_left). */
   reasonCounts: Record<string, number>;
-  /** Sums over PlayerStats (registered players). */
-  stats: {
-    matchesPlayed: number;
-    wins: number;
-    losses: number;
-    coresDestroyed: number;
-    zombiesKilled: number;
+  /** Partidas ganadas por cada slot (1 = anfitrión/base azul, 2 = retador/base roja). */
+  winsBySlot: Record<number, number>;
+  /** Sumas sobre MatchPlayer (incluye invitados y partidas sembradas). */
+  players: {
+    total: number;
+    winners: number;
+    kills: number;
+    zombieKills: number;
+    deaths: number;
+    timeAliveS: number;
+    coresAlive: number;
   };
-  /** MatchPlayer rows (includes guests): total and winners. */
-  players: { total: number; winners: number };
 }
 
 export interface Telemetry {
   totalMatches: number;
+  /** Partidas ganadas / filas de jugador (≈ 0.5 sin empates). */
   winRate: number;
+  winRateBySlot: { host: number; challenger: number };
+  /** Eliminaciones de jugadores / muertes. */
   kdr: number;
+  /** Zombis eliminados por cada muerte. */
+  zombiesPerDeath: number;
   avgDurationS: number;
-  survival: { avgDurationS: number; timeOutPct: number };
+  survival: {
+    avgDurationS: number;
+    /** % de partidas que terminaron por tiempo (nadie cayó antes). */
+    timeOutPct: number;
+    avgWaveReached: number;
+    avgTimeAliveS: number;
+    /** % de núcleos que seguían en pie al final. */
+    coresSurvivedPct: number;
+  };
 }
 
 const round = (n: number, d = 4): number => {
@@ -29,31 +46,27 @@ const round = (n: number, d = 4): number => {
 };
 
 /**
- * Pure aggregation (no DB access).
- *
- * - winRate: PlayerStats wins / matchesPlayed; when there are no registered
- *   stats, falls back to MatchPlayer winners / rows (guest-only data).
- * - kdr: "kills" (coresDestroyed + zombiesKilled) divided by losses
- *   (min. 1 to avoid division by zero). 0 with no stats.
- * - survival: average match duration and the percentage of matches that
- *   ended by time_out (nobody's core fell before the clock ran out).
+ * Agregación pura (sin acceso a BD). Todo sale de MatchHistory/MatchPlayer, que
+ * guardan tanto partidas reales (stats del motor) como las sembradas con /seed.
  */
 export function computeTelemetry(input: TelemetryInput): Telemetry {
-  const { totalMatches, stats, players, reasonCounts } = input;
+  const { totalMatches, players, reasonCounts, winsBySlot } = input;
   const avg = input.avgDurationS ?? 0;
-
-  let winRate = 0;
-  if (stats.matchesPlayed > 0) winRate = stats.wins / stats.matchesPlayed;
-  else if (players.total > 0) winRate = players.winners / players.total;
-
-  const kdr = (stats.coresDestroyed + stats.zombiesKilled) / Math.max(stats.losses, 1);
-  const timeOutPct = totalMatches > 0 ? ((reasonCounts['time_out'] ?? 0) / totalMatches) * 100 : 0;
+  const perMatch = (n: number) => (totalMatches > 0 ? n / totalMatches : 0);
 
   return {
     totalMatches,
-    winRate: round(winRate),
-    kdr: round(kdr, 2),
+    winRate: round(players.total > 0 ? players.winners / players.total : 0),
+    winRateBySlot: { host: round(perMatch(winsBySlot[1] ?? 0)), challenger: round(perMatch(winsBySlot[2] ?? 0)) },
+    kdr: round(players.kills / Math.max(players.deaths, 1), 2),
+    zombiesPerDeath: round(players.zombieKills / Math.max(players.deaths, 1), 2),
     avgDurationS: round(avg, 2),
-    survival: { avgDurationS: round(avg, 2), timeOutPct: round(timeOutPct, 2) },
+    survival: {
+      avgDurationS: round(avg, 2),
+      timeOutPct: round(perMatch(reasonCounts['time_out'] ?? 0) * 100, 2),
+      avgWaveReached: round(input.avgMaxWave ?? 0, 2),
+      avgTimeAliveS: round(players.total > 0 ? players.timeAliveS / players.total : 0, 2),
+      coresSurvivedPct: round(players.total > 0 ? (players.coresAlive / players.total) * 100 : 0, 2),
+    },
   };
 }

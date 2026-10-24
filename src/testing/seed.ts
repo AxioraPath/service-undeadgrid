@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
+import { DIFFICULTIES, MAP_IDS, MATCH_DURATION, UNLOCKED_SURVIVORS } from '../config/game.config';
 
 export const SEED_CODE_PREFIX = 'SEED';
 
@@ -22,9 +23,8 @@ export function createRng(seed: number): () => number {
 }
 
 const REASONS = ['core_destroyed', 'time_out', 'opponent_left'] as const;
-const DIFFICULTIES = ['easy', 'normal', 'hard'];
-const MAPS = ['map-1', 'map-2', 'map-3'];
-const SURVIVORS = ['soldier', 'engineer', 'medic'];
+/** La preparación dura 60 s; luego una oleada por minuto (la horda final cuenta como 3). */
+const waveAt = (seconds: number) => Math.min(3, Math.floor(seconds / 60));
 
 export interface SyntheticMatch {
   id: string;
@@ -34,6 +34,7 @@ export interface SyntheticMatch {
   seed: bigint;
   durationS: number;
   reason: string;
+  maxWave: number;
 }
 export interface SyntheticPlayer {
   matchId: string;
@@ -43,6 +44,11 @@ export interface SyntheticPlayer {
   survivor: string;
   isWinner: boolean;
   coreHpEnd: number;
+  kills: number;
+  zombieKills: number;
+  deaths: number;
+  structuresBuilt: number;
+  timeAliveS: number;
 }
 
 /** Builds synthetic rows; fields are deterministic for a given seed (ids are random). */
@@ -58,25 +64,43 @@ export function buildSyntheticMatches(
     const id = randomUUID();
     const reason = pick(REASONS);
     const winnerSlot = rng() < 0.5 ? 1 : 2;
+    // Duraciones dentro de las reglas: por tiempo = 240 s; el resto termina antes.
+    const durationS =
+      reason === 'time_out'
+        ? MATCH_DURATION
+        : reason === 'core_destroyed'
+          ? 90 + Math.floor(rng() * (MATCH_DURATION - 90))
+          : 20 + Math.floor(rng() * (MATCH_DURATION - 20));
+    const maxWave = waveAt(durationS);
     matches.push({
       id,
       code: `${SEED_CODE_PREFIX}${String(i).padStart(4, '0')}`,
-      mapId: pick(MAPS),
+      mapId: pick(MAP_IDS),
       difficulty: pick(DIFFICULTIES),
       seed: BigInt(Math.floor(rng() * 2 ** 31)),
-      durationS: 60 + Math.floor(rng() * 840),
+      durationS,
       reason,
+      maxWave,
     });
     for (const slot of [1, 2]) {
       const isWinner = slot === winnerSlot;
+      // Valores plausibles: más zombis y combate cuanto más avanza la partida.
+      const combatS = Math.max(0, durationS - 60);
+      const deaths = Math.floor(rng() * (1 + combatS / 50)) + (isWinner ? 0 : 1);
+      const kills = Math.floor(rng() * (1 + combatS / 70)) + (isWinner ? 1 : 0);
       players.push({
         matchId: id,
         userId: null,
         slot,
         name: `seed-bot-${i * 2 + slot}`,
-        survivor: pick(SURVIVORS),
+        survivor: pick(UNLOCKED_SURVIVORS),
         isWinner,
-        coreHpEnd: isWinner ? 1 + Math.floor(rng() * 100) : 0,
+        coreHpEnd: reason === 'core_destroyed' && !isWinner ? 0 : 50 + Math.floor(rng() * 451),
+        kills,
+        zombieKills: Math.floor(rng() * (2 + combatS / 6)),
+        deaths,
+        structuresBuilt: 2 + Math.floor(rng() * 12),
+        timeAliveS: Math.max(0, durationS - deaths * 5 - Math.floor(rng() * 20)),
       });
     }
   }

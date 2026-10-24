@@ -11,35 +11,34 @@ export class TestingService {
 
   async telemetry(): Promise<Telemetry & { generatedAt: string; queryMs: number }> {
     const t0 = performance.now();
-    const [matchAgg, reasons, statsAgg, playerTotal, playerWinners] = await Promise.all([
-      this.prisma.matchHistory.aggregate({ _count: { _all: true }, _avg: { durationS: true } }),
+    const [matchAgg, reasons, playerAgg, playerWinners, coresAlive, winsBySlot] = await Promise.all([
+      this.prisma.matchHistory.aggregate({ _count: { _all: true }, _avg: { durationS: true, maxWave: true } }),
       this.prisma.matchHistory.groupBy({ by: ['reason'], _count: { _all: true } }),
-      this.prisma.playerStats.aggregate({
-        _sum: {
-          matchesPlayed: true,
-          wins: true,
-          losses: true,
-          coresDestroyed: true,
-          zombiesKilled: true,
-        },
+      this.prisma.matchPlayer.aggregate({
+        _count: { _all: true },
+        _sum: { kills: true, zombieKills: true, deaths: true, timeAliveS: true },
       }),
-      this.prisma.matchPlayer.count(),
       this.prisma.matchPlayer.count({ where: { isWinner: true } }),
+      this.prisma.matchPlayer.count({ where: { coreHpEnd: { gt: 0 } } }),
+      this.prisma.matchPlayer.groupBy({ by: ['slot'], where: { isWinner: true }, _count: { _all: true } }),
     ]);
 
-    const s = statsAgg._sum;
+    const sum = playerAgg._sum;
     const result = computeTelemetry({
       totalMatches: matchAgg._count._all,
       avgDurationS: matchAgg._avg.durationS,
+      avgMaxWave: matchAgg._avg.maxWave,
       reasonCounts: Object.fromEntries(reasons.map((r) => [r.reason, r._count._all])),
-      stats: {
-        matchesPlayed: s.matchesPlayed ?? 0,
-        wins: s.wins ?? 0,
-        losses: s.losses ?? 0,
-        coresDestroyed: s.coresDestroyed ?? 0,
-        zombiesKilled: s.zombiesKilled ?? 0,
+      winsBySlot: Object.fromEntries(winsBySlot.map((w) => [w.slot, w._count._all])),
+      players: {
+        total: playerAgg._count._all,
+        winners: playerWinners,
+        kills: sum.kills ?? 0,
+        zombieKills: sum.zombieKills ?? 0,
+        deaths: sum.deaths ?? 0,
+        timeAliveS: sum.timeAliveS ?? 0,
+        coresAlive,
       },
-      players: { total: playerTotal, winners: playerWinners },
     });
     return {
       ...result,

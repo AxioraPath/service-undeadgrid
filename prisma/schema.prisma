@@ -52,6 +52,8 @@ model PlayerStats {
   draws           Int      @default(0)
   coresDestroyed  Int      @default(0)
   zombiesKilled   Int      @default(0)
+  playerKills     Int      @default(0)
+  deaths          Int      @default(0)
   structuresBuilt Int      @default(0)
   totalPlaytimeS  Int      @default(0)
   bestStreak      Int      @default(0)
@@ -70,6 +72,7 @@ model MatchHistory {
   seed       BigInt
   durationS  Int
   reason     String // core_destroyed | time_out | opponent_left
+  maxWave    Int      @default(0) // oleada más alta alcanzada (0 = terminó en preparación)
   createdAt  DateTime @default(now())
 
   players MatchPlayer[]
@@ -91,6 +94,12 @@ model MatchPlayer {
   survivor  String
   isWinner  Boolean      @default(false)
   coreHpEnd Int          @default(0)
+  // Estadísticas de combate (salen del motor de la partida).
+  kills           Int    @default(0) // jugadores rivales eliminados
+  zombieKills     Int    @default(0)
+  deaths          Int    @default(0)
+  structuresBuilt Int    @default(0)
+  timeAliveS      Int    @default(0)
 
   @@index([userId])
   @@map("match_players")
