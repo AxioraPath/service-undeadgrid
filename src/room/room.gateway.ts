@@ -68,6 +68,16 @@ const COMBAT_START_DELAY_MS = 3000;
       .filter(Boolean),
     credentials: true,
   },
+  // Optimización de latencia: priorizar WebSocket (evita la fase de long-polling)
+  // y permitir upgrade. Esto reduce el ping percibido, importante para jugadores
+  // lejanos al datacenter.
+  transports: ['websocket', 'polling'],
+  // Heartbeat: detectar desconexiones rápido sin saturar la red.
+  pingInterval: 10000,
+  pingTimeout: 5000,
+  // No comprimir mensajes pequeños: ahorra CPU y latencia en payloads chicos.
+  perMessageDeflate: false,
+  httpCompression: false,
 })
 export class RoomGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
