@@ -37,12 +37,16 @@ export const gameInputSchema = z.object({
   right: z.boolean(),
   action: z.boolean(),
   aim: aimSchema,
+  /** Disparar siempre (clic izquierdo / stick de apuntar), también dentro de la base. */
+  fire: z.boolean().optional(),
 });
 export type GameInputPayload = z.infer<typeof gameInputSchema>;
 
 /** Acciones discretas: barra rápida (1-5) y sacar de la caja propia. */
 export const gameCommandSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('hotbar'), slot: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4), z.literal(5)]) }),
+  z.object({ type: z.literal('hotbar'), slot: z.number().int().min(1).max(7) as unknown as z.ZodType<1 | 2 | 3 | 4 | 5 | 6 | 7> }),
+  /** Construir en una casilla concreta (clic derecho / tocar la casilla); el servidor valida base y alcance. */
+  z.object({ type: z.literal('build'), x: z.number().int().min(0).max(255), y: z.number().int().min(0).max(255) }),
   z.object({ type: z.literal('crateTake'), item: z.enum(['wood', 'metal', 'medkits', 'shells']) }),
 ]);
 export type GameCommandPayload = z.infer<typeof gameCommandSchema>;
@@ -73,6 +77,8 @@ export interface GameMapDto {
   cores: Record<Slot, PointDto>;
   crates: Record<Slot, PointDto>;
   spawns: PointDto[];
+  /** Punto (en casillas) de la caja de armamento del centro. */
+  armory: PointDto;
 }
 
 export interface StockDto {
@@ -98,8 +104,11 @@ export interface GamePlayerDto {
   alive: boolean;
   /** Segundos para reaparecer; null si no reaparece (núcleo destruido) o está vivo. */
   respawnIn: number | null;
-  weapon: 'pistol' | 'shotgun';
-  build: 'wall' | 'trap';
+  weapon: 'pistol' | 'shotgun' | 'smg';
+  build: 'wall' | 'trap' | 'turret';
+  /** Balas de metralleta y torretas por colocar (de la caja de armamento). */
+  smgAmmo: number;
+  turrets: number;
   wood: number;
   metal: number;
   medkits: number;
@@ -131,7 +140,9 @@ export type GameEventDto =
   | { type: 'built'; x: number; y: number; what: string }
   | { type: 'rejected'; slot: Slot; reason: string }
   | { type: 'phase'; label: string }
-  | { type: 'coreHit'; slot: Slot };
+  | { type: 'coreHit'; slot: Slot }
+  | { type: 'armoryOpened'; slot: Slot }
+  | { type: 'armoryReady' };
 
 export interface GameStateDto {
   /** Tick del servidor (monotónico). */
@@ -146,6 +157,10 @@ export interface GameStateDto {
   structures: StructureTuple[];
   cores: Record<Slot, number>;
   crates: Record<Slot, StockDto>;
+  /** Caja de armamento: disponible, quién la abrió y segundos que lleva abriéndola cada slot. */
+  armory: { available: boolean; openedBy: Slot | null; progress: Partial<Record<Slot, number>> };
+  /** Torretas: [casilla, aimX, aimY, tiros en el cargador, recargando (0/1)]. */
+  turrets: [number, number, number, number, number][];
   /** Eventos ocurridos desde el último estado (efectos visuales). */
   events: GameEventDto[];
   result: { winner: Slot | 0; reason: string; durationS: number; byTime: boolean } | null;

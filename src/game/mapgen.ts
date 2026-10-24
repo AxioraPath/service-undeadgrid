@@ -33,8 +33,23 @@ export const Ground = {
   PLAZA: 7,
 } as const
 
-/** `lamp` es solo decoración (no bloquea); el resto ocupa sus casillas. */
-export type ObjectKind = 'tree' | 'rock' | 'car' | 'container' | 'debris' | 'barrel' | 'tires' | 'barrier' | 'water' | 'lamp'
+/** `lamp` es solo decoración (no bloquea); el resto ocupa sus casillas. `building` usa BUILDINGS[variant]. */
+export type ObjectKind = 'tree' | 'rock' | 'car' | 'container' | 'debris' | 'barrel' | 'tires' | 'barrier' | 'water' | 'lamp' | 'building'
+
+/** Estructuras del paquete de arte: nombre del sprite y casillas que ocupan (colisión = lo que se ve). */
+export const BUILDINGS = [
+  { name: 'almacen', w: 3, h: 3 },
+  { name: 'tienda', w: 3, h: 2 },
+  { name: 'torre-vigilancia', w: 2, h: 3 },
+  { name: 'torre-agua', w: 2, h: 3 },
+  { name: 'generador', w: 2, h: 2 },
+  { name: 'tanque-combustible', w: 3, h: 2 },
+  { name: 'muro-piedra-h', w: 2, h: 1 },
+  { name: 'valla-madera', w: 2, h: 1 },
+  { name: 'sacos-h', w: 2, h: 1 },
+] as const
+const BIG_BUILDINGS = [0, 1, 2, 3, 4, 5]
+const SMALL_STRUCTURES = [6, 7, 8]
 
 export interface MapObject {
   kind: ObjectKind
@@ -69,6 +84,8 @@ export interface GameMapData {
   cores: Record<Slot, Point>
   crates: Record<Slot, Point>
   spawns: Point[]
+  /** Punto (en casillas) de la caja de armamento, en el centro de la plazoleta. */
+  armory: Point
 }
 
 const SOLID_TILES = new Set<number>([
@@ -110,6 +127,7 @@ export function isMapReachable(map: GameMapData): boolean {
 }
 
 const OBJECT_TILE: Record<Exclude<ObjectKind, 'lamp'>, TileKind> = {
+  building: Tile.CONTAINER,
   tree: Tile.TREE,
   rock: Tile.ROCK,
   car: Tile.CAR,
@@ -128,14 +146,22 @@ const mirror = (x: number, y: number): Point => ({ x: MAP_W - 1 - x, y: MAP_H - 
 const FOREST = 2
 
 /**
- * Trazado tomado de las referencias (Diseños/Mapas): bases en esquinas opuestas,
- * un estanque grande en el centro que las carreteras cruzan con puentes, carreteras
- * desde cada base y hasta las 4 orillas (donde salen los zombis) y estanques en las
- * esquinas libres. Los obstáculos se reparten con la semilla y siempre en espejo.
+ * Trazado tomado de las referencias (Diseños/Mapas): bases en esquinas opuestas, una
+ * plazoleta abierta en el centro (ahí está la caja de armamento) rodeada por cuatro
+ * estanques con pasillos anchos entre ellos, carreteras desde cada base y hasta las 4
+ * orillas (donde salen los zombis), estructuras y obstáculos repartidos con la semilla,
+ * siempre en espejo.
  */
 const CX = Math.floor(MAP_W / 2) - 1 // columna de la carretera vertical (mitad superior)
 const CY = Math.floor(MAP_H / 2) - 1 // fila de la carretera horizontal (mitad izquierda)
-const POND = { x: CX - 5, y: CY - 3, w: 12, h: 8 } // estanque central, simétrico por sí mismo
+const PLAZA = { x: CX - 1, y: CY - 1, w: 4, h: 4 } // simétrica por sí misma
+/** Estanque de arriba a la izquierda y de arriba a la derecha (los otros dos son su espejo). */
+const PONDS = [
+  { x: CX - 8, y: CY - 6, w: 5, h: 4 },
+  { x: CX + 5, y: CY - 6, w: 5, h: 4 },
+]
+/** Zona que se deja libre alrededor de la plazoleta para que el centro no quede cerrado. */
+const CENTER_CLEAR = { x: CX - 4, y: CY - 3, w: 10, h: 8 }
 
 function buildMap(seed: number): GameMapData {
   const rng = createRng(seed)
@@ -173,31 +199,35 @@ function buildMap(seed: number): GameMapData {
       }
   }
 
-  // Estanque central (agua) — las carreteras lo cruzan con puentes.
-  for (let y = POND.y; y < POND.y + POND.h; y++)
-    for (let x = POND.x; x < POND.x + POND.w; x++) {
-      tiles[idx(x, y)] = Tile.WATER
-      ground[idx(x, y)] = Ground.WATER
-    }
+  // Estanques alrededor del centro (cada uno con su espejo).
+  for (const pond of PONDS)
+    for (let y = pond.y; y < pond.y + pond.h; y++)
+      for (let x = pond.x; x < pond.x + pond.w; x++)
+        for (const q of [{ x, y }, mirror(x, y)]) {
+          tiles[idx(q.x, q.y)] = Tile.WATER
+          ground[idx(q.x, q.y)] = Ground.WATER
+        }
 
-  // Carreteras (se marcan con su espejo). Sobre el agua son puentes; en el centro, plazoleta.
+  // Carreteras (se marcan con su espejo).
   const road = (x: number, y: number) => {
-    for (const p of [{ x, y }, mirror(x, y)]) {
-      const i = idx(p.x, p.y)
-      const overWater = ground[i] === Ground.WATER
-      tiles[i] = Tile.ROAD
-      ground[i] = overWater ? Ground.BRIDGE : Ground.ROAD
+    for (const q of [{ x, y }, mirror(x, y)]) {
+      tiles[idx(q.x, q.y)] = Tile.ROAD
+      ground[idx(q.x, q.y)] = Ground.ROAD
     }
   }
-  for (let y = FOREST; y <= CY; y++) road(CX, y) // de la orilla de arriba al centro
-  for (let x = FOREST; x <= CX; x++) road(x, CY) // de la orilla izquierda al centro
-  road(CX + 1, CY) // cierre de la plazoleta 2 × 2 del centro
-  for (const [x, y] of [[CX, CY], [CX + 1, CY]]) {
-    for (const p of [{ x, y }, mirror(x, y)]) ground[idx(p.x, p.y)] = Ground.PLAZA
-  }
+  for (let y = FOREST; y < PLAZA.y; y++) road(CX, y) // de la orilla de arriba a la plazoleta
+  for (let x = FOREST; x < PLAZA.x; x++) road(x, CY) // de la orilla izquierda a la plazoleta
   const b1 = bases[1]
   for (let x = b1.x + b1.w; x < CX; x++) road(x, b1.y + 4) // base 1 → carretera vertical
   for (let y = b1.y + b1.h; y < CY; y++) road(b1.x + 4, y) // base 1 → carretera horizontal
+
+  // Plazoleta abierta en el centro (se camina; ahí está la caja de armamento).
+  for (let y = PLAZA.y; y < PLAZA.y + PLAZA.h; y++)
+    for (let x = PLAZA.x; x < PLAZA.x + PLAZA.w; x++) {
+      tiles[idx(x, y)] = Tile.ROAD
+      ground[idx(x, y)] = Ground.PLAZA
+    }
+  const armory: Point = { x: PLAZA.x + PLAZA.w / 2, y: PLAZA.y + PLAZA.h / 2 }
 
   // 4. Puntos de aparición de zombis: donde las carreteras tocan el bosque.
   const spawns: Point[] = [{ x: CX, y: FOREST }, mirror(CX, FOREST), { x: FOREST, y: CY }, mirror(FOREST, CY)]
@@ -207,7 +237,9 @@ function buildMap(seed: number): GameMapData {
     ([1, 2] as Slot[]).some((s) => {
       const b = bases[s]
       return x >= b.x - 1 && x <= b.x + b.w && y >= b.y - 1 && y <= b.y + b.h
-    }) || spawns.some((p) => Math.abs(p.x - x) <= 2 && Math.abs(p.y - y) <= 2)
+    }) ||
+    spawns.some((p) => Math.abs(p.x - x) <= 2 && Math.abs(p.y - y) <= 2) ||
+    inRect(CENTER_CLEAR, x, y)
 
   const fits = (x: number, y: number, w: number, h: number, on: number) => {
     for (let yy = y; yy < y + h; yy++)
@@ -220,11 +252,23 @@ function buildMap(seed: number): GameMapData {
     return true
   }
 
-  const place = (kind: ObjectKind, x: number, y: number, w: number, h: number, variant: number, on: number = Tile.GRASS) => {
+  /** Deja un pasillo de 1 casilla libre alrededor (para que las estructuras no tapen caminos). */
+  const clearAround = (x: number, y: number, w: number, h: number) => {
+    for (let yy = y - 1; yy <= y + h; yy++)
+      for (let xx = x - 1; xx <= x + w; xx++) {
+        if (xx >= x && xx < x + w && yy >= y && yy < y + h) continue
+        const t = tiles[idx(xx, yy)]
+        if (t !== Tile.GRASS && t !== Tile.ROAD && t !== Tile.BORDER) return false
+      }
+    return true
+  }
+
+  const place = (kind: ObjectKind, x: number, y: number, w: number, h: number, variant: number, on: number = Tile.GRASS, margin = false) => {
     const mx = MAP_W - x - w
     const my = MAP_H - y - h
     const overlapsMirror = x < mx + w && mx < x + w && y < my + h && my < y + h
     if (overlapsMirror || !fits(x, y, w, h, on) || !fits(mx, my, w, h, on)) return false
+    if (margin && (!clearAround(x, y, w, h) || !clearAround(mx, my, w, h))) return false
     for (const [ox, oy] of [[x, y], [mx, my]]) {
       if (kind !== 'lamp')
         for (let yy = oy; yy < oy + h; yy++)
@@ -246,6 +290,17 @@ function buildMap(seed: number): GameMapData {
 
   // Estanques en las esquinas libres (arriba a la derecha y su espejo abajo a la izquierda).
   tryPlace(1, 40, (r) => place('water', r.int(MAP_W - FOREST - 9, MAP_W - FOREST - 6), r.int(FOREST + 1, FOREST + 3), r.int(4, 5), 3, 0))
+  // Estructuras grandes (almacén, tienda, torres, generador, tanque) y pequeñas (muros, vallas, sacos).
+  tryPlace(4, 300, (r) => {
+    const v = r.pick(BIG_BUILDINGS)
+    const b = BUILDINGS[v]
+    return place('building', anyX(r, b.w), anyY(r, b.h), b.w, b.h, v, Tile.GRASS, true)
+  })
+  tryPlace(6, 300, (r) => {
+    const v = r.pick(SMALL_STRUCTURES)
+    const b = BUILDINGS[v]
+    return place('building', anyX(r, b.w), anyY(r, b.h), b.w, b.h, v, Tile.GRASS, true)
+  })
   // Vehículos abandonados sobre las carreteras (nunca en puentes ni cruces).
   tryPlace(3, 80, (r) =>
     r.next() < 0.5
@@ -269,9 +324,14 @@ function buildMap(seed: number): GameMapData {
   tryPlace(8, 200, (r) => place('debris', anyX(r), anyY(r), 1, 1, r.int(0, 1)))
   tryPlace(5, 120, (r) => place(r.next() < 0.5 ? 'barrel' : 'tires', anyX(r), anyY(r), 1, 1, 0))
 
-  // Faroles a los lados de las carreteras (decoración).
-  for (let y = FOREST + 2; y < POND.y - 1; y += 4) place('lamp', CX - 1, y, 1, 1, 0, Tile.GRASS)
-  for (let x = FOREST + 2; x < POND.x - 1; x += 5) place('lamp', x, CY + 1, 1, 1, 0, Tile.GRASS)
+  // Faroles a los lados de las carreteras (decoración) y alrededor de la plazoleta.
+  for (let y = FOREST + 2; y < PLAZA.y - 4; y += 4) place('lamp', CX - 1, y, 1, 1, 0, Tile.GRASS)
+  for (let x = FOREST + 2; x < PLAZA.x - 4; x += 5) place('lamp', x, CY + 1, 1, 1, 0, Tile.GRASS)
+  for (const [x, y] of [[PLAZA.x - 1, PLAZA.y - 1], [PLAZA.x + PLAZA.w, PLAZA.y - 1]]) {
+    objects.push({ kind: 'lamp', x, y, w: 1, h: 1, variant: 0 })
+    const m = mirror(x, y)
+    objects.push({ kind: 'lamp', x: m.x, y: m.y, w: 1, h: 1, variant: 0 })
+  }
 
   // Parches de tierra (solo visual, se puede caminar).
   for (let i = 0; i < 10; i++) {
@@ -282,7 +342,7 @@ function buildMap(seed: number): GameMapData {
         for (let xx = ox; xx < ox + 2; xx++) if (tiles[idx(xx, yy)] === Tile.GRASS && ground[idx(xx, yy)] === Ground.GRASS) ground[idx(xx, yy)] = Ground.DIRT
   }
 
-  return { seed, w: MAP_W, h: MAP_H, tiles, ground, objects, bases, cores, crates, spawns }
+  return { seed, w: MAP_W, h: MAP_H, tiles, ground, objects, bases, cores, crates, spawns, armory }
 }
 
 function roadNeighbors(tiles: Uint8Array, x: number, y: number) {

@@ -1,6 +1,6 @@
 import { gameInputSchema } from '../contracts/game';
-import { MAP_H, MAP_W, PLAYER, STRUCTURES, WEAPONS } from './constants';
-import { createMatch, frontTile, previewBuild, quantizeFacing, sanitizeAim, step } from './engine';
+import { ARMORY, BODY, MAP_H, MAP_W, PLAYER, PLAYER_START, STRUCTURES, TURRET, WEAPONS } from './constants';
+import { createMatch, frontTile, playerInOwnBase, previewBuild, quantizeFacing, sanitizeAim, step, type Command } from './engine';
 import { encodeState } from './snapshot';
 import { applyDamage, clamp, heal, lerp, zombieCount, zombieDamage, zombieHp } from './formulas';
 import { generateMap, Ground, isMapReachable, Tile } from './mapgen';
@@ -29,10 +29,11 @@ describe('Generador de mapas', () => {
     expect(a.objects).toEqual(b.objects);
   });
 
-  it('el estanque central se cruza por puentes y el mapa es simétrico', () => {
+  it('el centro es una plazoleta abierta con la caja de armamento y el mapa es simétrico', () => {
     const map = generateMap(77);
-    const bridges = [...map.ground].filter((g) => g === Ground.BRIDGE).length;
-    expect(bridges).toBeGreaterThanOrEqual(8);
+    expect([...map.ground].filter((g) => g === Ground.PLAZA)).toHaveLength(16);
+    expect(map.armory).toEqual({ x: MAP_W / 2, y: MAP_H / 2 });
+    expect(map.objects.some((o) => o.kind === 'building')).toBe(true);
     for (let y = 0; y < MAP_H; y++)
       for (let x = 0; x < MAP_W; x++)
         expect(map.tiles[y * MAP_W + x]).toBe(map.tiles[(MAP_H - 1 - y) * MAP_W + (MAP_W - 1 - x)]);
@@ -289,5 +290,85 @@ describe('Mouse aiming', () => {
     const f = quantizeFacing(-0.1, -5);
     expect(f.x).toBeCloseTo(0, 9);
     expect(f.y).toBeCloseTo(-1, 9);
+  });
+});
+
+describe('Combate nuevo: disparo, construcción, caja de armamento y torretas', () => {
+  const idle = { up: false, down: false, left: false, right: false, action: false };
+  const one = () => createMatch({ seed: 5, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'explorador' }] });
+  const run = (s: ReturnType<typeof one>, input: object, ticks: number, cmds: { playerId: string; cmd: Command }[] = []) => {
+    for (let i = 0; i < ticks; i++) step(s, { a: { ...idle, ...input } }, i === 0 ? cmds : [], 1 / 30);
+  };
+
+  it('empieza con recursos suficientes para cerrar la base', () => {
+    const p = one().players[0];
+    expect(p).toMatchObject(PLAYER_START);
+  });
+
+  it('con `fire` dispara aunque esté dentro de su base', () => {
+    const s = one();
+    expect(playerInOwnBase(s, s.players[0])).toBe(true);
+    run(s, { fire: true }, 1);
+    expect(s.bullets.length).toBeGreaterThan(0);
+    expect(s.structures.size).toBe(0);
+  });
+
+  it('construye con clic/toque en una casilla de su base dentro del alcance, y rechaza fuera de ella', () => {
+    const s = one();
+    const b = s.map.bases[1];
+    // El jugador aparece junto a su núcleo; la casilla (x+1, y+5) de la base queda a ~2 casillas.
+    run(s, {}, 1, [{ playerId: 'a', cmd: { type: 'build', x: b.x + 1, y: b.y + 5 } }]);
+    expect(s.structures.get((b.y + 5) * MAP_W + b.x + 1)?.type).toBe('wood');
+    // Dentro de la base pero lejos del jugador: se rechaza.
+    run(s, {}, 1, [{ playerId: 'a', cmd: { type: 'build', x: b.x + 7, y: b.y } }]);
+    expect(s.structures.size).toBe(1);
+    // Cerca pero fuera de la base: se rechaza.
+    run(s, {}, 1, [{ playerId: 'a', cmd: { type: 'build', x: b.x + 3, y: b.y + b.h } }]);
+    expect(s.structures.size).toBe(1);
+  });
+
+  it('la caja de armamento se abre tras 5 s junto a ella (desde la oleada 1) y da metralleta y torreta', () => {
+    const s = one();
+    const p = s.players[0];
+    s.time = 60;
+    run(s, {}, 1);
+    expect(s.armory.available).toBe(true);
+    Object.assign(p, { x: s.armory.x, y: s.armory.y + 0.5 });
+    run(s, {}, 30 * 4);
+    expect(p.smgAmmo).toBe(0);
+    run(s, {}, 30 * 1 + 2);
+    expect(p.smgAmmo).toBe(ARMORY.smgAmmo);
+    expect(p.turrets).toBe(1);
+    expect(p.weapon).toBe('smg');
+    expect(s.armory.available).toBe(false);
+  });
+
+  it('la torreta dispara a zombis cercanos y recarga cuando vacía el cargador', () => {
+    const s = one();
+    const p = s.players[0];
+    p.turrets = 1;
+    p.build = 'turret';
+    const b = s.map.bases[1];
+    run(s, {}, 1, [{ playerId: 'a', cmd: { type: 'build', x: b.x + 1, y: b.y + 5 } }]);
+    const key = (b.y + 5) * MAP_W + b.x + 1;
+    expect(s.structures.get(key)?.type).toBe('turret');
+    expect(p.turrets).toBe(0);
+    s.zombies.push({ id: 999, x: b.x + 1.5, y: b.y + 8.5, px: 0, py: 0, hp: 10_000, maxHp: 10_000, damage: 0, attackCd: 99, retargetAt: 1e9, trapAcc: 0, kind: 'tank', attackAt: -1, hurtAt: -1, target: null });
+    run(s, {}, Math.ceil(30 * TURRET.fireInterval * TURRET.magazine) + 5);
+    const t = s.structures.get(key)!;
+    expect(t.ammo).toBe(0);
+    expect(t.reloadUntil).toBeGreaterThan(s.time);
+  });
+
+  it('la colisión es a la altura de los pies: se acerca a un obstáculo por abajo hasta tocarlo con los pies', () => {
+    const s = one();
+    const p = s.players[0];
+    // Un muro justo arriba del jugador: puede subir hasta que la caja de los pies toca la casilla de arriba.
+    const tx = Math.floor(p.x);
+    const ty = Math.floor(p.y) - 1;
+    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 2, orient: 'h' });
+    run(s, { up: true }, 30);
+    expect(p.y + BODY.top).toBeGreaterThanOrEqual(ty + 1 - 1e-6);
+    expect(p.y + BODY.top).toBeLessThan(ty + 1.05);
   });
 });

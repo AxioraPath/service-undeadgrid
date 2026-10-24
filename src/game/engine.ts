@@ -1,6 +1,11 @@
 import {
+  ARMORY,
+  BODY,
+  BUILD_REACH,
   BULLET,
+  PLAYER_START,
   TICK_RATE,
+  TURRET,
   CORE_HP,
   CRATE_REFILL,
   CRATE_START,
@@ -32,14 +37,18 @@ export interface PlayerInput {
   action: boolean
   /** Optional aim vector (player -> mouse, world space). Sanitized by the engine; absent = legacy facing. */
   aim?: { x: number; y: number }
+  /** Disparar siempre (clic izquierdo / stick de apuntar), también dentro de tu base. */
+  fire?: boolean
 }
 
 /** Cantidad de ticks simulados (el servidor avanza a paso fijo de 1/30 s). */
 export const ticksFor = (seconds: number) => Math.floor(seconds * TICK_RATE + 1e-6)
 
 export type Command =
-  | { type: 'hotbar'; slot: 1 | 2 | 3 | 4 | 5 }
+  | { type: 'hotbar'; slot: 1 | 2 | 3 | 4 | 5 | 6 | 7 }
   | { type: 'crateTake'; item: keyof Stock }
+  /** Construir en una casilla concreta de tu base (clic derecho / tocar la casilla). */
+  | { type: 'build'; x: number; y: number }
 
 export interface Player {
   id: string
@@ -63,6 +72,10 @@ export interface Player {
   metal: number
   medkits: number
   shells: number
+  /** Balas de la metralleta (solo de la caja de armamento). */
+  smgAmmo: number
+  /** Torretas listas para colocar (solo de la caja de armamento). */
+  turrets: number
   kills: number
   zombieKills: number
   deaths: number
@@ -116,12 +129,28 @@ export interface Bullet {
 export type WallOrient = 'h' | 'v'
 
 export interface Structure {
-  type: 'wood' | 'reinforced' | 'trap'
+  type: 'wood' | 'reinforced' | 'trap' | 'turret'
   hp: number
   maxHp: number
   owner: Slot
   /** Wall orientation chosen at build time (traps use 'h' and ignore it). */
   orient: WallOrient
+  /** Solo torretas: tiros en el cargador, enfriamiento, fin de la recarga y hacia dónde apunta. */
+  ammo?: number
+  cd?: number
+  reloadUntil?: number
+  aimX?: number
+  aimY?: number
+}
+
+/** Caja de armamento del centro del mapa. */
+export interface Armory {
+  x: number
+  y: number
+  available: boolean
+  /** Segundos acumulados por cada jugador que la está abriendo. */
+  progress: Record<string, number>
+  openedBy: Slot | null
 }
 
 export interface Core {
@@ -138,6 +167,8 @@ export type GameEvent =
   | { type: 'rejected'; slot: Slot; reason: string }
   | { type: 'phase'; label: string }
   | { type: 'coreHit'; slot: Slot }
+  | { type: 'armoryOpened'; slot: Slot }
+  | { type: 'armoryReady' }
 
 export interface MatchResult {
   winner: Slot | 0 // 0 = empate
@@ -160,6 +191,9 @@ export interface MatchState {
   /** HP of the ENEMY core removed by each slot's player bullets (stat only, never read by the simulation). */
   coreDamageDealt: Record<Slot, number>
   crates: Record<Slot, Stock>
+  armory: Armory
+  /** Mapas de distancia (zombis): se recalculan cada medio segundo por objetivo. */
+  flows: Map<string, { dist: Float32Array; at: number }>
   spawn: { remaining: number; nextAt: number; interval: number; wave: number; cursor: number }
   nextId: number
   maxWave: number
@@ -209,10 +243,9 @@ export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
         respawnAt: null,
         weapon: 'pistol',
         build: 'wall',
-        wood: 0,
-        metal: 0,
-        medkits: 0,
-        shells: 0,
+        ...PLAYER_START,
+        smgAmmo: 0,
+        turrets: 0,
         kills: 0,
         zombieKills: 0,
         deaths: 0,
@@ -231,6 +264,8 @@ export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
     cores: { 1: { slot: 1, hp: CORE_HP }, 2: { slot: 2, hp: CORE_HP } },
     coreDamageDealt: { 1: 0, 2: 0 },
     crates: { 1: { ...CRATE_START }, 2: { ...CRATE_START } },
+    armory: { x: map.armory.x, y: map.armory.y, available: false, progress: {}, openedBy: null },
+    flows: new Map(),
     spawn: { remaining: 0, nextAt: 0, interval: 1, wave: 0, cursor: 0 },
     nextId: 1,
     maxWave: 0,
@@ -261,9 +296,9 @@ export const isBlocked = (s: MatchState, x: number, y: number) =>
 const bulletBlocked = (s: MatchState, x: number, y: number) =>
   blocksBullets(tileAt(s.map, x, y)) || isCoreTile(s, x, y) || wallAt(s, x, y) !== undefined
 
-/** Devuelve la primera casilla sólida que toca un círculo (como caja) en esa posición. */
+/** Devuelve la primera casilla sólida que toca el cuerpo (caja a la altura de los pies, ver BODY). */
 function overlapSolid(s: MatchState, x: number, y: number, r: number): Point | null {
-  for (let ty = Math.floor(y - r); ty <= Math.floor(y + r); ty++)
+  for (let ty = Math.floor(y + BODY.top); ty <= Math.floor(y + BODY.bottom - 1e-6); ty++)
     for (let tx = Math.floor(x - r); tx <= Math.floor(x + r); tx++) if (isBlocked(s, tx, ty)) return { x: tx, y: ty }
   return null
 }
@@ -299,7 +334,7 @@ export function frontTile(p: Player): Point {
     const x = p.dirX >= 0 ? Math.floor(p.x + r) + 1 : Math.floor(p.x - r) - 1
     return { x, y: Math.floor(p.y) }
   }
-  const y = p.dirY >= 0 ? Math.floor(p.y + r) + 1 : Math.floor(p.y - r) - 1
+  const y = p.dirY >= 0 ? Math.floor(p.y + BODY.bottom - 1e-6) + 1 : Math.floor(p.y + BODY.top) - 1
   return { x: Math.floor(p.x), y }
 }
 
@@ -312,9 +347,25 @@ export type BuildPreview = { x: number; y: number; ok: boolean; lacks: boolean; 
 /** Qué haría el botón de acción en la casilla de enfrente (orden del documento). */
 export function previewBuild(s: MatchState, p: Player): BuildPreview {
   const { x, y } = frontTile(p)
+  return previewBuildAt(s, p, x, y, wallOrientFor(p))
+}
+
+/** Orientación de una pared nueva colocada con clic/toque: sigue a las paredes vecinas; si no hay, la vista. */
+function wallOrientAt(s: MatchState, p: Player, x: number, y: number): WallOrient {
+  const wall = (dx: number, dy: number) => {
+    const st = s.structures.get(tileIndex(x + dx, y + dy))
+    return !!st && (st.type === 'wood' || st.type === 'reinforced')
+  }
+  if (wall(-1, 0) || wall(1, 0)) return 'h'
+  if (wall(0, -1) || wall(0, 1)) return 'v'
+  return wallOrientFor(p)
+}
+
+/** Qué pasaría al construir en la casilla (x, y): reparar, reforzar o colocar lo seleccionado. */
+export function previewBuildAt(s: MatchState, p: Player, x: number, y: number, newOrient: WallOrient): BuildPreview {
   const existing = s.structures.get(tileIndex(x, y))
-  // Upgrading/repairing keeps the existing wall's orientation; new walls use the builder's facing.
-  const orient: WallOrient = existing && existing.type !== 'trap' ? existing.orient : wallOrientFor(p)
+  // Upgrading/repairing keeps the existing wall's orientation; new walls use the given one.
+  const orient: WallOrient = existing && existing.type !== 'trap' ? existing.orient : newOrient
   const need = (has: boolean, label: string): BuildPreview => ({ x, y, ok: has, lacks: !has, label, orient })
   const base = s.map.bases[p.slot]
   const crate = s.map.crates[p.slot]
@@ -322,17 +373,21 @@ export function previewBuild(s: MatchState, p: Player): BuildPreview {
     return { x, y, ok: false, lacks: false, label: 'No se puede construir aquí', orient }
 
   const st = s.structures.get(tileIndex(x, y))
-  if (st && st.type !== 'trap' && st.hp < st.maxHp)
+  if (st && st.type !== 'trap' && st.type !== 'turret' && st.hp < st.maxHp)
     return need(p.wood >= STRUCTURES.repair.wood, `Reparar pared (${STRUCTURES.repair.wood} madera)`)
   if (st?.type === 'wood')
     return need(p.metal >= STRUCTURES.reinforced.metal, `Reforzar pared (${STRUCTURES.reinforced.metal} metal)`)
-  if (st) return { x, y, ok: false, lacks: false, label: st.type === 'trap' ? 'Ya hay una trampa' : 'Pared al máximo', orient }
+  if (st) {
+    const label = st.type === 'trap' ? 'Ya hay una trampa' : st.type === 'turret' ? 'Ya hay una torreta' : 'Pared al máximo'
+    return { x, y, ok: false, lacks: false, label, orient }
+  }
 
   const occupied =
-    p.build === 'wall' &&
+    p.build !== 'trap' &&
     [...s.players.filter((o) => o.alive), ...s.zombies].some((e) => Math.abs(e.x - (x + 0.5)) < 0.8 && Math.abs(e.y - (y + 0.5)) < 0.8)
   if (occupied) return { x, y, ok: false, lacks: false, label: 'Casilla ocupada', orient }
   if (p.build === 'wall') return need(p.wood >= STRUCTURES.woodWall.wood, `Pared de madera (${STRUCTURES.woodWall.wood} madera)`)
+  if (p.build === 'turret') return need(p.turrets > 0, 'Torreta (de la caja de armamento)')
   return need(p.metal >= STRUCTURES.trap.metal, `Trampa de púas (${STRUCTURES.trap.metal} metal)`)
 }
 
@@ -349,6 +404,13 @@ function applyCommand(s: MatchState, p: Player, cmd: Command) {
     else if (cmd.slot === 2) p.weapon = 'shotgun'
     else if (cmd.slot === 4) p.build = 'wall'
     else if (cmd.slot === 5) p.build = 'trap'
+    else if (cmd.slot === 6) {
+      if (p.smgAmmo > 0) p.weapon = 'smg'
+      else s.events.push({ type: 'rejected', slot: p.slot, reason: 'Sin metralleta: ábrela en la caja del centro' })
+    } else if (cmd.slot === 7) {
+      if (p.turrets > 0) p.build = 'turret'
+      else s.events.push({ type: 'rejected', slot: p.slot, reason: 'Sin torretas: están en la caja del centro' })
+    }
     else if (cmd.slot === 3 && p.alive) {
       if (p.medkits <= 0) s.events.push({ type: 'rejected', slot: p.slot, reason: 'No tienes botiquines' })
       else if (p.hp >= PLAYER.maxHp) s.events.push({ type: 'rejected', slot: p.slot, reason: 'Tu vida está llena' })
@@ -357,6 +419,15 @@ function applyCommand(s: MatchState, p: Player, cmd: Command) {
         p.hp = heal(p.hp)
       }
     }
+    return
+  }
+  if (cmd.type === 'build') {
+    if (!p.alive || !Number.isInteger(cmd.x) || !Number.isInteger(cmd.y)) return
+    if (Math.hypot(cmd.x + 0.5 - p.x, cmd.y + 0.5 - p.y) > BUILD_REACH) {
+      s.events.push({ type: 'rejected', slot: p.slot, reason: 'Muy lejos: acércate para construir' })
+      return
+    }
+    applyBuild(s, p, previewBuildAt(s, p, cmd.x, cmd.y, wallOrientAt(s, p, cmd.x, cmd.y)))
     return
   }
   if (cmd.type === 'crateTake') {
@@ -369,14 +440,17 @@ function applyCommand(s: MatchState, p: Player, cmd: Command) {
 }
 
 function tryBuild(s: MatchState, p: Player) {
-  const pv = previewBuild(s, p)
+  applyBuild(s, p, previewBuild(s, p))
+}
+
+function applyBuild(s: MatchState, p: Player, pv: BuildPreview) {
   if (!pv.ok) {
     s.events.push({ type: 'rejected', slot: p.slot, reason: pv.lacks ? `Te falta material: ${pv.label}` : pv.label })
     return
   }
   const key = tileIndex(pv.x, pv.y)
   const st = s.structures.get(key)
-  const repaired = !!st && st.type !== 'trap' && st.hp < st.maxHp
+  const repaired = !!st && st.type !== 'trap' && st.type !== 'turret' && st.hp < st.maxHp
   if (repaired) {
     p.wood -= STRUCTURES.repair.wood
     st.hp = Math.min(st.maxHp, st.hp + STRUCTURES.repair.hp)
@@ -385,6 +459,10 @@ function tryBuild(s: MatchState, p: Player) {
     st.type = 'reinforced'
     st.hp += STRUCTURES.reinforced.hp - st.maxHp
     st.maxHp = STRUCTURES.reinforced.hp
+  } else if (p.build === 'turret') {
+    p.turrets--
+    s.structures.set(key, { type: 'turret', hp: TURRET.hp, maxHp: TURRET.hp, owner: p.slot, orient: 'h', ammo: TURRET.magazine, cd: 0, reloadUntil: 0, aimX: 0, aimY: 1 })
+    if (p.turrets <= 0) p.build = 'wall'
   } else if (p.build === 'wall') {
     p.wood -= STRUCTURES.woodWall.wood
     s.structures.set(key, { type: 'wood', hp: STRUCTURES.woodWall.hp, maxHp: STRUCTURES.woodWall.hp, owner: p.slot, orient: pv.orient })
@@ -420,6 +498,14 @@ export function quantizeFacing(x: number, y: number): { x: number; y: number } {
 
 function shoot(s: MatchState, p: Player) {
   const w = WEAPONS[p.weapon]
+  if (p.weapon === 'smg') {
+    if (p.smgAmmo <= 0) {
+      p.weapon = 'pistol'
+      s.events.push({ type: 'rejected', slot: p.slot, reason: 'Sin balas de metralleta' })
+      return
+    }
+    p.smgAmmo--
+  }
   if (w.usesShell) {
     if (p.shells <= 0) {
       s.events.push({ type: 'rejected', slot: p.slot, reason: 'Sin cartuchos: tómalos de tu caja' })
@@ -498,7 +584,10 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
 
   p.fireCd = Math.max(0, p.fireCd - dt)
   const pressed = input.action && !p.prevAction
-  if (playerInOwnBase(s, p)) {
+  if (input.fire) {
+    // Clic izquierdo / stick de apuntar: dispara en cualquier lugar, también dentro de tu base.
+    if (p.fireCd <= 0) shoot(s, p)
+  } else if (playerInOwnBase(s, p)) {
     if (pressed) tryBuild(s, p)
   } else if (input.action && p.fireCd <= 0) {
     shoot(s, p)
@@ -547,6 +636,9 @@ function updateBullets(s: MatchState, dt: number) {
           }
         }
       }
+      // Tus paredes y torretas no frenan tus balas: se puede defender la base desde dentro.
+      const own = wallAt(s, tx, ty)
+      if (own && own.owner === b.ownerSlot && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
       if (bulletBlocked(s, tx, ty)) {
         const wall = wallAt(s, tx, ty)
         if (wall && wall.owner !== b.ownerSlot && pvp) {
@@ -620,6 +712,130 @@ function chooseTarget(s: MatchState, z: Zombie) {
   z.target = best
 }
 
+// ---- Caminos de los zombis (mapa de distancias por objetivo) ----
+
+const FLOW_REFRESH_S = 0.5
+/** Atravesar una pared de jugador cuesta como rodear varias casillas: prefieren rodear, pero la rompen si conviene. */
+const WALL_COST = 6
+
+/** Dijkstra desde las casillas objetivo; agua, árboles y edificios no se pueden cruzar. */
+function computeFlow(s: MatchState, goals: Point[]): Float32Array {
+  const w = s.map.w
+  const h = s.map.h
+  const dist = new Float32Array(w * h).fill(Infinity)
+  const heap: [number, number][] = []
+  const push = (d: number, i: number) => {
+    heap.push([d, i])
+    let c = heap.length - 1
+    while (c > 0) {
+      const parent = (c - 1) >> 1
+      if (heap[parent][0] <= heap[c][0]) break
+      ;[heap[parent], heap[c]] = [heap[c], heap[parent]]
+      c = parent
+    }
+  }
+  const pop = () => {
+    const top = heap[0]
+    const last = heap.pop()!
+    if (heap.length) {
+      heap[0] = last
+      let c = 0
+      for (;;) {
+        const l = c * 2 + 1
+        const r = l + 1
+        let m = c
+        if (l < heap.length && heap[l][0] < heap[m][0]) m = l
+        if (r < heap.length && heap[r][0] < heap[m][0]) m = r
+        if (m === c) break
+        ;[heap[m], heap[c]] = [heap[c], heap[m]]
+        c = m
+      }
+    }
+    return top
+  }
+  for (const g of goals) {
+    if (g.x < 0 || g.y < 0 || g.x >= w || g.y >= h) continue
+    dist[g.y * w + g.x] = 0
+    push(0, g.y * w + g.x)
+  }
+  while (heap.length) {
+    const [d, i] = pop()
+    if (d > dist[i]) continue
+    const x = i % w
+    const y = (i / w) | 0
+    for (const [ddx, ddy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + ddx
+      const ny = y + ddy
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue
+      if (isSolidTileKind(tileAt(s.map, nx, ny))) continue
+      const st = s.structures.get(ny * w + nx)
+      const cost = st && st.type !== 'trap' ? WALL_COST : 1
+      const nd = d + cost
+      const ni = ny * w + nx
+      if (nd < dist[ni]) {
+        dist[ni] = nd
+        push(nd, ni)
+      }
+    }
+  }
+  return dist
+}
+
+function flowFor(s: MatchState, z: Zombie): Float32Array | null {
+  if (!z.target) return null
+  let key: string
+  let goals: Point[]
+  if (z.target.kind === 'core') {
+    const c = s.map.cores[z.target.slot]
+    key = `core${z.target.slot}`
+    goals = [{ x: c.x, y: c.y }, { x: c.x + 1, y: c.y }, { x: c.x, y: c.y + 1 }, { x: c.x + 1, y: c.y + 1 }]
+  } else {
+    const id = z.target.id
+    const p = s.players.find((o) => o.id === id)
+    if (!p || !p.alive) return null
+    key = `p:${id}`
+    goals = [{ x: Math.floor(p.x), y: Math.floor(p.y) }]
+  }
+  const cached = s.flows.get(key)
+  if (cached && s.time - cached.at < FLOW_REFRESH_S) return cached.dist
+  const dist = computeFlow(s, goals)
+  s.flows.set(key, { dist, at: s.time })
+  return dist
+}
+
+/** Dirección hacia la casilla vecina más cercana al objetivo; cerca del objetivo va directo. */
+function pathDirection(s: MatchState, z: Zombie, t: Point, ux: number, uy: number): Point {
+  const flow = flowFor(s, z)
+  if (!flow) return { x: ux, y: uy }
+  const w = s.map.w
+  const tx = Math.floor(z.x)
+  const ty = Math.floor(z.y)
+  const here = flow[ty * w + tx]
+  if (!Number.isFinite(here) || here <= 1.5 || Math.hypot(t.x - z.x, t.y - z.y) < 1.5) return { x: ux, y: uy }
+  const free = (x: number, y: number) => !isSolidTileKind(tileAt(s.map, x, y)) && !wallAt(s, x, y)
+  let best = here
+  let bx = 0
+  let by = 0
+  for (const [ddx, ddy] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+    const nx = tx + ddx
+    const ny = ty + ddy
+    if (nx < 0 || ny < 0 || nx >= w || ny >= s.map.h) continue
+    // Sin cortar esquinas: en diagonal, las dos casillas laterales deben estar libres.
+    if (ddx && ddy && (!free(tx + ddx, ty) || !free(tx, ty + ddy))) continue
+    const d = flow[ny * w + nx] + (ddx && ddy ? 0.4 : 0)
+    if (d < best) {
+      best = d
+      bx = ddx
+      by = ddy
+    }
+  }
+  if (bx === 0 && by === 0) return { x: ux, y: uy }
+  const cx = tx + bx + 0.5 - z.x
+  const cy = ty + by + 0.5 - z.y
+  const len = Math.hypot(cx, cy) || 1
+  return { x: cx / len, y: cy / len }
+}
+
 function updateZombies(s: MatchState, dt: number) {
   for (const z of s.zombies) {
     z.attackCd = Math.max(0, z.attackCd - dt)
@@ -652,9 +868,10 @@ function updateZombies(s: MatchState, dt: number) {
       continue
     }
 
-    // Línea recta hacia el objetivo; si una pared estorba, la golpea hasta romperla.
+    // Sigue el camino más corto (rodea agua, árboles y edificios); si una pared estorba, la golpea.
+    const dir = pathDirection(s, z, t, dx / dist, dy / dist)
     const step = ZOMBIE.speed * dt
-    const hit = moveEntity(s, z, (dx / dist) * step, (dy / dist) * step, ZOMBIE.radius)
+    const hit = moveEntity(s, z, dir.x * step, dir.y * step, ZOMBIE.radius)
     if (hit) {
       const wall = wallAt(s, hit.x, hit.y)
       if (wall && z.attackCd <= 0) {
@@ -726,6 +943,81 @@ function updateTraps(s: MatchState, dt: number) {
 }
 
 // ---------------------------------------------------------------------------
+// Caja de armamento y torretas
+// ---------------------------------------------------------------------------
+
+/** Quien se queda junto a la caja 5 s sin recibir daño se lleva metralleta, torreta y botiquín. */
+function updateArmory(s: MatchState, dt: number) {
+  const a = s.armory
+  if (!a.available) return
+  for (const p of s.players) {
+    const near = p.alive && Math.hypot(p.x - a.x, p.y - a.y) <= ARMORY.radius
+    if (!near || p.hurtAt === s.time) {
+      delete a.progress[p.id]
+      continue
+    }
+    a.progress[p.id] = (a.progress[p.id] ?? 0) + dt
+    if (a.progress[p.id] >= ARMORY.openS) {
+      p.smgAmmo += ARMORY.smgAmmo
+      p.turrets += ARMORY.turrets
+      p.medkits += ARMORY.medkits
+      p.weapon = 'smg'
+      a.available = false
+      a.openedBy = p.slot
+      a.progress = {}
+      s.events.push({ type: 'armoryOpened', slot: p.slot })
+      return
+    }
+  }
+}
+
+/** Torretas: apuntan al zombi (o rival) más cercano en rango; disparan lento y recargan. */
+function updateTurrets(s: MatchState, dt: number) {
+  const pvp = isCombat(s)
+  for (const [key, st] of s.structures) {
+    if (st.type !== 'turret') continue
+    st.cd = Math.max(0, (st.cd ?? 0) - dt)
+    if ((st.ammo ?? 0) <= 0) {
+      if (s.time < (st.reloadUntil ?? 0)) continue
+      st.ammo = TURRET.magazine
+    }
+    if (st.cd > 0) continue
+    const cx = (key % s.map.w) + 0.5
+    const cy = Math.floor(key / s.map.w) + 0.5
+    let target: Point | null = null
+    let best = TURRET.range
+    for (const z of s.zombies) {
+      const d = Math.hypot(z.x - cx, z.y - cy)
+      if (z.hp > 0 && d < best) {
+        best = d
+        target = z
+      }
+    }
+    if (!target && pvp)
+      for (const p of s.players) {
+        const d = Math.hypot(p.x - cx, p.y - cy)
+        if (p.alive && p.slot !== st.owner && d < best) {
+          best = d
+          target = p
+        }
+      }
+    if (!target) continue
+    const len = Math.hypot(target.x - cx, target.y - cy) || 1
+    const ux = (target.x - cx) / len
+    const uy = (target.y - cy) / len
+    const x = cx + ux * 0.55
+    const y = cy + uy * 0.55
+    s.bullets.push({ id: s.nextId++, owner: `turret:${key}`, ownerSlot: st.owner, x, y, px: x, py: y, vx: ux * BULLET.speed, vy: uy * BULLET.speed, damage: TURRET.damage, traveled: 0 })
+    s.events.push({ type: 'shot', x: cx, y: cy, dirX: ux, dirY: uy, slot: st.owner })
+    st.aimX = ux
+    st.aimY = uy
+    st.cd = TURRET.fireInterval
+    st.ammo = (st.ammo ?? 0) - 1
+    if (st.ammo <= 0) st.reloadUntil = s.time + TURRET.reloadS
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Fases y victoria
 // ---------------------------------------------------------------------------
 
@@ -738,6 +1030,11 @@ function updatePhase(s: MatchState) {
   s.events.push({ type: 'phase', label: ph.label })
   if (ph.wave > 0) {
     s.maxWave = ph.wave
+    // La caja de armamento del centro se rellena en cada oleada.
+    s.armory.available = true
+    s.armory.openedBy = null
+    s.armory.progress = {}
+    s.events.push({ type: 'armoryReady' })
     for (const slot of [1, 2] as Slot[]) {
       const crate = s.crates[slot]
       for (const k of Object.keys(CRATE_REFILL) as (keyof Stock)[]) crate[k] += CRATE_REFILL[k]
@@ -827,6 +1124,8 @@ export function step(s: MatchState, inputs: Record<string, PlayerInput>, command
   spawnZombies(s)
   updateZombies(s, dt)
   updateTraps(s, dt)
+  updateTurrets(s, dt)
+  updateArmory(s, dt)
   for (const z of s.zombies) if (z.hp <= 0) s.events.push({ type: 'zombieDied', x: z.x, y: z.y, kind: z.kind })
   s.zombies = s.zombies.filter((z) => z.hp > 0)
 

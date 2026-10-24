@@ -36,11 +36,13 @@ export const PLAYER = {
   respawnS: 5,
 }
 
-export type WeaponId = 'pistol' | 'shotgun'
+export type WeaponId = 'pistol' | 'shotgun' | 'smg'
 
 export const WEAPONS: Record<WeaponId, { name: string; damage: number; rate: number; pellets: number; spread: number; usesShell: boolean }> = {
   pistol: { name: 'Pistola', damage: 15, rate: 3, pellets: 1, spread: 0, usesShell: false },
   shotgun: { name: 'Escopeta', damage: 10, rate: 1, pellets: 5, spread: 0.32, usesShell: true },
+  // Solo sale de la caja de armamento del centro; gasta balas propias (smgAmmo).
+  smg: { name: 'Metralleta', damage: 8, rate: 8, pellets: 1, spread: 0, usesShell: false },
 }
 
 export const BULLET = { speed: 16, range: 9 }
@@ -56,7 +58,7 @@ export const ZOMBIE = {
   retargetS: 0.5,
 }
 
-export type BuildId = 'wall' | 'trap'
+export type BuildId = 'wall' | 'trap' | 'turret'
 
 export const STRUCTURES = {
   woodWall: { hp: 100, wood: 2 },
@@ -75,7 +77,26 @@ export interface Stock {
   shells: number
 }
 
-export const CRATE_START: Stock = { wood: 10, metal: 4, medkits: 2, shells: 12 }
+/** Lo que trae cada jugador al empezar (alcanza para cerrar bien la base). */
+export const PLAYER_START: Stock = { wood: 30, metal: 10, medkits: 2, shells: 16 }
+/** Extra en la caja de la base al empezar; luego se rellena en cada oleada. */
+export const CRATE_START: Stock = { wood: 6, metal: 2, medkits: 1, shells: 6 }
 export const CRATE_REFILL: Stock = { wood: 4, metal: 2, medkits: 1, shells: 6 }
 
 export const REWARDS = { woodPerZombie: 1, zombiesPerMetal: 5 }
+
+/** Construir con clic/toque: casilla de tu base a esta distancia (en casillas) como máximo. */
+export const BUILD_REACH = 4.5
+
+/**
+ * Colisión de jugadores y zombis: una caja a la altura de los pies (y = posición, en casillas).
+ * El dibujo pone los pies ~0.34 casillas debajo de la posición, así que la caja va de -0.1 a +0.34:
+ * se choca donde se ve el personaje, no con su cabeza.
+ */
+export const BODY = { top: -0.1, bottom: 0.34 }
+
+/** Caja de armamento del centro: hay que quedarse junto a ella sin recibir daño para abrirla. */
+export const ARMORY = { openS: 5, radius: 1.6, smgAmmo: 120, turrets: 1, medkits: 1 }
+
+/** Torreta: equilibrada, fácil de destruir, dispara lento y recarga. */
+export const TURRET = { hp: 120, range: 6, damage: 9, fireInterval: 0.9, magazine: 8, reloadS: 4 }

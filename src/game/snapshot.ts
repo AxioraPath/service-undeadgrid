@@ -3,7 +3,7 @@ import type { Slot } from './constants';
 import { phaseOf, playerInOwnBase, playerOnOwnCrate, previewBuild, type MatchState } from './engine';
 
 const ZOMBIE_KIND = { normal: 0, fast: 1, tank: 2 } as const;
-const STRUCTURE_TYPE = { wood: 0, reinforced: 1, trap: 2 } as const;
+const STRUCTURE_TYPE = { wood: 0, reinforced: 1, trap: 2, turret: 3 } as const;
 
 /** Redondea a milésimas para que el JSON viaje más ligero. */
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -21,6 +21,7 @@ export function encodeMap(s: MatchState): GameMapDto {
     cores: { 1: { ...m.cores[1] }, 2: { ...m.cores[2] } },
     crates: { 1: { ...m.crates[1] }, 2: { ...m.crates[2] } },
     spawns: m.spawns.map((p) => ({ ...p })),
+    armory: { ...m.armory },
   };
 }
 
@@ -55,6 +56,8 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
         metal: p.metal,
         medkits: p.medkits,
         shells: p.shells,
+        smgAmmo: p.smgAmmo,
+        turrets: p.turrets,
         kills: p.kills,
         zombieKills: p.zombieKills,
         deaths: p.deaths,
@@ -70,6 +73,16 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
     structures: [...s.structures].map(([key, st]) => [key, STRUCTURE_TYPE[st.type], st.hp, st.maxHp, st.owner as Slot, st.orient]),
     cores: { 1: s.cores[1].hp, 2: s.cores[2].hp },
     crates: { 1: { ...s.crates[1] }, 2: { ...s.crates[2] } },
+    armory: {
+      available: s.armory.available,
+      openedBy: s.armory.openedBy,
+      progress: Object.fromEntries(
+        s.players.filter((p) => s.armory.progress[p.id] !== undefined).map((p) => [p.slot, r3(s.armory.progress[p.id])]),
+      ),
+    },
+    turrets: [...s.structures]
+      .filter(([, st]) => st.type === 'turret')
+      .map(([key, st]) => [key, r3(st.aimX ?? 0), r3(st.aimY ?? 1), st.ammo ?? 0, s.time < (st.reloadUntil ?? 0) ? 1 : 0]),
     events,
     result: s.result ? { ...s.result } : null,
   };

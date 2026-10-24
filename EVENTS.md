@@ -177,10 +177,23 @@ cambiar y como latido (~15/s). Un toque de acción entre dos ticks no se pierde.
 ### `game:command`
 Acciones discretas.
 
-- **Payload:** `{ type: 'hotbar'; slot: 1|2|3|4|5 }` (1 pistola, 2 escopeta, 3 botiquín,
-  4 pared, 5 trampa) o `{ type: 'crateTake'; item: 'wood'|'metal'|'medkits'|'shells' }`
-  (solo funciona parado sobre **tu** caja).
+- **Payload:**
+  - `{ type: 'hotbar'; slot: 1..7 }`: 1 pistola, 2 escopeta, 3 botiquín, 4 pared, 5 trampa,
+    6 metralleta (si tienes balas), 7 torreta (si tienes una).
+  - `{ type: 'crateTake'; item: 'wood'|'metal'|'medkits'|'shells' }` (solo parado sobre **tu** caja).
+  - `{ type: 'build'; x; y }`: construir en esa casilla (clic derecho / tocar la casilla). Debe estar
+    en tu base y a ≤ 4.5 casillas de ti; repara, refuerza o coloca lo seleccionado (pared, trampa o torreta).
 - **Ack:** opcional, `Ack<void>`.
+
+`game:input` acepta además `fire?: boolean`: dispara siempre (clic izquierdo / stick de apuntar),
+también dentro de tu base. `action` (Espacio) sigue siendo contextual: en tu base construye enfrente.
+
+**Caja de armamento** (centro del mapa, `map.armory`): se rellena al empezar cada oleada; quien se
+queda 5 s junto a ella sin recibir daño obtiene metralleta (120 balas), 1 torreta y 1 botiquín.
+`game:state.armory` trae `{ available, openedBy, progress }` y eventos `armoryReady` / `armoryOpened`.
+
+**Torretas** (`structures` tipo 3 y `game:state.turrets`): 120 de vida, alcance 6, 1 disparo cada 0.9 s,
+cargador de 8 y 4 s de recarga. Disparan al zombi (o rival, en combate) más cercano.
 
 ### `game:sync`
 Mapa completo + estado actual. Se pide al entrar a la pantalla de partida o al
