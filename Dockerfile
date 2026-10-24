@@ -8,12 +8,20 @@
 
 # 1) Build del FRONTEND. Se clona el repo del front en tiempo de build.
 #    FRONTEND_REF permite fijar una rama/commit; por defecto main.
+#    GIT_TOKEN (build arg) permite clonar repos privados sin dejar credenciales
+#    en la imagen final (esta etapa se descarta; solo se copia /front/dist).
 FROM node:22-alpine AS frontend
-ARG FRONTEND_REPO=https://github.com/AxioraPath/undeadgrid-web-app.git
 ARG FRONTEND_REF=main
+ARG GIT_TOKEN=""
 RUN apk add --no-cache git
 WORKDIR /front
-RUN git clone --depth 1 --branch "${FRONTEND_REF}" "${FRONTEND_REPO}" .
+RUN if [ -n "$GIT_TOKEN" ]; then \
+      git clone --depth 1 --branch "${FRONTEND_REF}" \
+        "https://x-access-token:${GIT_TOKEN}@github.com/AxioraPath/undeadgrid-web-app.git" . ; \
+    else \
+      git clone --depth 1 --branch "${FRONTEND_REF}" \
+        "https://github.com/AxioraPath/undeadgrid-web-app.git" . ; \
+    fi
 RUN npm ci
 # Mismo dominio: el front habla con el back por rutas relativas (/socket.io, /api).
 ENV VITE_API_URL=""
