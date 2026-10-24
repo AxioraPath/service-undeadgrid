@@ -45,6 +45,8 @@ import { RateLimiterService } from '../common/rate-limiter.service';
 import type { Room } from '../domain/room';
 import { PhaseOrchestrator } from './phase-orchestrator.service';
 import { RoomService } from './room.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { resolvePlayerName } from './resolve-player-name';
 import { AuthService } from '../auth/auth.service';
 import { MatchStatsService } from '../stats/match-stats.service';
 
@@ -97,6 +99,7 @@ export class RoomGateway
     private readonly limiter: RateLimiterService,
     private readonly auth: AuthService,
     private readonly matchStats: MatchStatsService,
+    private readonly prisma: PrismaService,
   ) {}
 
   // ---- Ciclo de vida del gateway ----
@@ -138,6 +141,12 @@ export class RoomGateway
       try {
         const payload = await this.auth.verifyAccess(raw);
         client.data.userId = payload.sub;
+        // Cache the account display name once so lobby events need no query.
+        const user = await this.prisma.user.findUnique({
+          where: { id: payload.sub },
+          select: { displayName: true },
+        });
+        client.data.displayName = user?.displayName;
         this.logger.debug(`Socket ${client.id} autenticado como userId=${payload.sub}`);
       } catch {
         // Token inválido/expirado: se trata como invitado, no se rechaza la conexión.
@@ -251,6 +260,16 @@ export class RoomGateway
     void client.join(room.code);
   }
 
+  /** Authenticated sockets use the account displayName; guests use the payload name. */
+  private resolveName(client: AppSocket, payloadName: string): string {
+    return (
+      resolvePlayerName(
+        client.data.userId ? client.data.displayName : null,
+        payloadName,
+      ) ?? payloadName
+    );
+  }
+
   // ---- Handlers cliente → servidor ----
 
   @SubscribeMessage('lobby:create')
@@ -261,7 +280,7 @@ export class RoomGateway
     return this.handle(client, 'lobby:create', () => {
       const payload = this.parse(createRoomSchema, body);
       const { room, player } = this.rooms.create({
-        name: payload.name,
+        name: this.resolveName(client, payload.name),
         socketId: client.id,
         survivor: payload.survivor,
         userId: client.data.userId ?? null,
@@ -285,7 +304,7 @@ export class RoomGateway
       const payload = this.parse(joinRoomSchema, body);
       const { room, player, reconnected } = this.rooms.join({
         code: payload.code,
-        name: payload.name,
+        name: this.resolveName(client, payload.name),
         socketId: client.id,
         survivor: payload.survivor,
         sessionId: payload.sessionId,

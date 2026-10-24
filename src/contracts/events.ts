@@ -94,6 +94,8 @@ export interface SocketData {
   slot?: Slot;
   /** Id de la cuenta real si el socket se autenticó con JWT. */
   userId?: string;
+  /** displayName de la cuenta (cacheado al autenticar); fuente de verdad del nombre en partida. */
+  displayName?: string;
 }
 
 /** No usamos eventos entre servidores (sin adaptador multi-nodo por ahora). */
