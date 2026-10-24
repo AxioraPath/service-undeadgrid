@@ -27,9 +27,14 @@ export const Ground = {
   BASE: 3,
   WATER: 4,
   GRAVEL: 5,
+  /** Puente de madera sobre el agua (se camina). */
+  BRIDGE: 6,
+  /** Plazoleta de concreto en el centro del mapa. */
+  PLAZA: 7,
 } as const
 
-export type ObjectKind = 'tree' | 'rock' | 'car' | 'container' | 'debris' | 'barrel' | 'tires' | 'barrier' | 'water'
+/** `lamp` es solo decoración (no bloquea); el resto ocupa sus casillas. */
+export type ObjectKind = 'tree' | 'rock' | 'car' | 'container' | 'debris' | 'barrel' | 'tires' | 'barrier' | 'water' | 'lamp'
 
 export interface MapObject {
   kind: ObjectKind
@@ -104,7 +109,7 @@ export function isMapReachable(map: GameMapData): boolean {
   return targets.every((t) => seen[idx(t.x, t.y)] === 1)
 }
 
-const OBJECT_TILE: Record<ObjectKind, TileKind> = {
+const OBJECT_TILE: Record<Exclude<ObjectKind, 'lamp'>, TileKind> = {
   tree: Tile.TREE,
   rock: Tile.ROCK,
   car: Tile.CAR,
@@ -119,8 +124,18 @@ const OBJECT_TILE: Record<ObjectKind, TileKind> = {
 /** Punto simétrico (rotación de 180°): lo que hay en un lado del mapa aparece igual en el otro. */
 const mirror = (x: number, y: number): Point => ({ x: MAP_W - 1 - x, y: MAP_H - 1 - y })
 
-// Anillo de carretera alrededor del centro, simétrico por sí mismo.
-const RING = { x0: 10, x1: MAP_W - 1 - 10, y0: 5, y1: MAP_H - 1 - 5 }
+/** Grosor del bosque que rodea el mapa. */
+const FOREST = 2
+
+/**
+ * Trazado tomado de las referencias (Diseños/Mapas): bases en esquinas opuestas,
+ * un estanque grande en el centro que las carreteras cruzan con puentes, carreteras
+ * desde cada base y hasta las 4 orillas (donde salen los zombis) y estanques en las
+ * esquinas libres. Los obstáculos se reparten con la semilla y siempre en espejo.
+ */
+const CX = Math.floor(MAP_W / 2) - 1 // columna de la carretera vertical (mitad superior)
+const CY = Math.floor(MAP_H / 2) - 1 // fila de la carretera horizontal (mitad izquierda)
+const POND = { x: CX - 5, y: CY - 3, w: 12, h: 8 } // estanque central, simétrico por sí mismo
 
 function buildMap(seed: number): GameMapData {
   const rng = createRng(seed)
@@ -128,15 +143,17 @@ function buildMap(seed: number): GameMapData {
   const ground = new Uint8Array(MAP_W * MAP_H)
   const objects: MapObject[] = []
 
-  // 1. Cuadrícula vacía con borde de muros fijos (bosque).
+  // 1. Cuadrícula vacía con borde de bosque.
   for (let y = 0; y < MAP_H; y++)
-    for (let x = 0; x < MAP_W; x++)
-      tiles[idx(x, y)] = x === 0 || y === 0 || x === MAP_W - 1 || y === MAP_H - 1 ? Tile.BORDER : Tile.GRASS
+    for (let x = 0; x < MAP_W; x++) {
+      const edge = x < FOREST || y < FOREST || x >= MAP_W - FOREST || y >= MAP_H - FOREST
+      tiles[idx(x, y)] = edge ? Tile.BORDER : Tile.GRASS
+    }
 
   // 2. Bases 8 × 8 en esquinas opuestas, con núcleo al centro y caja al lado.
   const bases: Record<Slot, Rect> = {
-    1: { x: 1, y: 1, w: BASE_SIZE, h: BASE_SIZE },
-    2: { x: MAP_W - 1 - BASE_SIZE, y: MAP_H - 1 - BASE_SIZE, w: BASE_SIZE, h: BASE_SIZE },
+    1: { x: FOREST + 1, y: FOREST + 1, w: BASE_SIZE, h: BASE_SIZE },
+    2: { x: MAP_W - FOREST - 1 - BASE_SIZE, y: MAP_H - FOREST - 1 - BASE_SIZE, w: BASE_SIZE, h: BASE_SIZE },
   }
   const cores: Record<Slot, Point> = {
     1: { x: bases[1].x + 3, y: bases[1].y + 3 },
@@ -156,31 +173,34 @@ function buildMap(seed: number): GameMapData {
       }
   }
 
-  // Carreteras: anillo central, salida de cada base y ramales hacia las orillas (donde salen zombis).
+  // Estanque central (agua) — las carreteras lo cruzan con puentes.
+  for (let y = POND.y; y < POND.y + POND.h; y++)
+    for (let x = POND.x; x < POND.x + POND.w; x++) {
+      tiles[idx(x, y)] = Tile.WATER
+      ground[idx(x, y)] = Ground.WATER
+    }
+
+  // Carreteras (se marcan con su espejo). Sobre el agua son puentes; en el centro, plazoleta.
   const road = (x: number, y: number) => {
     for (const p of [{ x, y }, mirror(x, y)]) {
-      tiles[idx(p.x, p.y)] = Tile.ROAD
-      ground[idx(p.x, p.y)] = Ground.ROAD
+      const i = idx(p.x, p.y)
+      const overWater = ground[i] === Ground.WATER
+      tiles[i] = Tile.ROAD
+      ground[i] = overWater ? Ground.BRIDGE : Ground.ROAD
     }
   }
-  for (let x = RING.x0; x <= RING.x1; x++) road(x, RING.y0)
-  for (let y = RING.y0; y <= RING.y1; y++) road(RING.x0, y)
-  for (let x = bases[1].x + bases[1].w; x < RING.x0; x++) road(x, RING.y0) // base 1 → anillo
-  const topSpur = Math.floor(MAP_W / 2) - 1
-  const sideSpur = Math.floor(MAP_H / 2) - 1
-  for (let y = 1; y < RING.y0; y++) road(topSpur, y)
-  for (let x = 1; x < RING.x0; x++) road(x, sideSpur)
+  for (let y = FOREST; y <= CY; y++) road(CX, y) // de la orilla de arriba al centro
+  for (let x = FOREST; x <= CX; x++) road(x, CY) // de la orilla izquierda al centro
+  road(CX + 1, CY) // cierre de la plazoleta 2 × 2 del centro
+  for (const [x, y] of [[CX, CY], [CX + 1, CY]]) {
+    for (const p of [{ x, y }, mirror(x, y)]) ground[idx(p.x, p.y)] = Ground.PLAZA
+  }
+  const b1 = bases[1]
+  for (let x = b1.x + b1.w; x < CX; x++) road(x, b1.y + 4) // base 1 → carretera vertical
+  for (let y = b1.y + b1.h; y < CY; y++) road(b1.x + 4, y) // base 1 → carretera horizontal
 
-  // Grava a los lados de la carretera.
-  for (let y = 1; y < MAP_H - 1; y++)
-    for (let x = 1; x < MAP_W - 1; x++) {
-      if (tiles[idx(x, y)] !== Tile.GRASS) continue
-      const nearRoad = [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => tiles[idx(x + dx, y + dy)] === Tile.ROAD)
-      if (nearRoad) ground[idx(x, y)] = Ground.GRAVEL
-    }
-
-  // 4. Puntos de aparición de zombis: al final de cada ramal.
-  const spawns: Point[] = [{ x: topSpur, y: 1 }, mirror(topSpur, 1), { x: 1, y: sideSpur }, mirror(1, sideSpur)]
+  // 4. Puntos de aparición de zombis: donde las carreteras tocan el bosque.
+  const spawns: Point[] = [{ x: CX, y: FOREST }, mirror(CX, FOREST), { x: FOREST, y: CY }, mirror(FOREST, CY)]
 
   // 3. Obstáculos en espejo para que el mapa sea justo.
   const reserved = (x: number, y: number) =>
@@ -192,10 +212,10 @@ function buildMap(seed: number): GameMapData {
   const fits = (x: number, y: number, w: number, h: number, on: number) => {
     for (let yy = y; yy < y + h; yy++)
       for (let xx = x; xx < x + w; xx++) {
-        if (xx <= 0 || yy <= 0 || xx >= MAP_W - 1 || yy >= MAP_H - 1) return false
-        if (reserved(xx, yy) || tiles[idx(xx, yy)] !== on) return false
-        // No tapar cruces de carretera ni dejar el agua pegada a otra cosa.
-        if (on === Tile.ROAD && roadNeighbors(tiles, xx, yy) > 2) return false
+        if (xx < FOREST || yy < FOREST || xx >= MAP_W - FOREST || yy >= MAP_H - FOREST) return false
+        const i = idx(xx, yy)
+        if (reserved(xx, yy) || tiles[i] !== on) return false
+        if (on === Tile.ROAD && (ground[i] !== Ground.ROAD || roadNeighbors(tiles, xx, yy) > 2)) return false
       }
     return true
   }
@@ -206,11 +226,12 @@ function buildMap(seed: number): GameMapData {
     const overlapsMirror = x < mx + w && mx < x + w && y < my + h && my < y + h
     if (overlapsMirror || !fits(x, y, w, h, on) || !fits(mx, my, w, h, on)) return false
     for (const [ox, oy] of [[x, y], [mx, my]]) {
-      for (let yy = oy; yy < oy + h; yy++)
-        for (let xx = ox; xx < ox + w; xx++) {
-          tiles[idx(xx, yy)] = OBJECT_TILE[kind]
-          if (kind === 'water') ground[idx(xx, yy)] = Ground.WATER
-        }
+      if (kind !== 'lamp')
+        for (let yy = oy; yy < oy + h; yy++)
+          for (let xx = ox; xx < ox + w; xx++) {
+            tiles[idx(xx, yy)] = OBJECT_TILE[kind]
+            if (kind === 'water') ground[idx(xx, yy)] = Ground.WATER
+          }
       objects.push({ kind, x: ox, y: oy, w, h, variant })
     }
     return true
@@ -220,29 +241,42 @@ function buildMap(seed: number): GameMapData {
     let placed = 0
     for (let i = 0; i < attempts && placed < times; i++) if (fn(rng)) placed++
   }
+  const anyX = (r: Rng, w = 1) => r.int(FOREST, MAP_W - FOREST - w)
+  const anyY = (r: Rng, h = 1) => r.int(FOREST, MAP_H - FOREST - h)
 
-  // Vehículos abandonados sobre la carretera del anillo.
-  tryPlace(2, 60, (r) =>
+  // Estanques en las esquinas libres (arriba a la derecha y su espejo abajo a la izquierda).
+  tryPlace(1, 40, (r) => place('water', r.int(MAP_W - FOREST - 9, MAP_W - FOREST - 6), r.int(FOREST + 1, FOREST + 3), r.int(4, 5), 3, 0))
+  // Vehículos abandonados sobre las carreteras (nunca en puentes ni cruces).
+  tryPlace(3, 80, (r) =>
     r.next() < 0.5
-      ? place('car', r.int(RING.x0 + 1, RING.x1 - 2), RING.y0, 2, 1, r.int(0, 3), Tile.ROAD)
-      : place('car', RING.x0, r.int(RING.y0 + 1, RING.y1 - 2), 1, 2, r.int(0, 3), Tile.ROAD),
+      ? place('car', r.int(FOREST + 3, CX - 3), CY, 2, 1, r.int(0, 3), Tile.ROAD)
+      : place('car', CX, r.int(FOREST + 3, CY - 4), 1, 2, r.int(0, 3), Tile.ROAD),
   )
-  // Lagos (2 × 2 a 3 × 3) dentro del anillo o en los lados.
-  tryPlace(1, 60, (r) => place('water', r.int(RING.x0 + 2, RING.x1 - 4), r.int(RING.y0 + 2, RING.y1 - 4), r.int(2, 3), r.int(2, 3), 0))
-  tryPlace(1, 60, (r) => place('water', r.int(2, MAP_W - 5), r.int(2, MAP_H - 5), 2, 2, 0))
-  tryPlace(2, 80, (r) =>
-    r.next() < 0.5 ? place('container', r.int(2, MAP_W - 4), r.int(2, MAP_H - 3), 2, 1, r.int(0, 1)) : place('container', r.int(2, MAP_W - 3), r.int(2, MAP_H - 4), 1, 2, r.int(0, 1)),
-  )
-  tryPlace(1, 60, (r) => place('barrier', r.int(2, MAP_W - 4), r.int(2, MAP_H - 3), 2, 1, r.int(0, 1)))
-  tryPlace(4, 80, (r) => place('rock', r.int(2, MAP_W - 3), r.int(2, MAP_H - 3), 1, 1, r.int(0, 1)))
-  tryPlace(6, 100, (r) => place('tree', r.int(2, MAP_W - 3), r.int(2, MAP_H - 3), 1, 1, r.int(0, 2)))
-  tryPlace(3, 80, (r) => place('debris', r.int(2, MAP_W - 3), r.int(2, MAP_H - 3), 1, 1, r.int(0, 1)))
-  tryPlace(3, 80, (r) => place(r.next() < 0.5 ? 'barrel' : 'tires', r.int(2, MAP_W - 3), r.int(2, MAP_H - 3), 1, 1, 0))
+  tryPlace(4, 120, (r) => (r.next() < 0.5 ? place('container', anyX(r, 2), anyY(r), 2, 1, r.int(0, 1)) : place('container', anyX(r), anyY(r, 2), 1, 2, r.int(0, 1))))
+  tryPlace(3, 100, (r) => place('barrier', anyX(r, 2), anyY(r), 2, 1, r.int(0, 1)))
+  tryPlace(10, 200, (r) => place('rock', anyX(r), anyY(r), 1, 1, r.int(0, 1)))
+  // Arboledas de 2 a 3 árboles juntos, como en las referencias.
+  tryPlace(9, 200, (r) => {
+    const x = anyX(r, 2)
+    const y = anyY(r, 2)
+    const ok = place('tree', x, y, 1, 1, r.int(0, 2))
+    if (ok) {
+      place('tree', x + 1, y, 1, 1, r.int(0, 2))
+      if (r.next() < 0.6) place('tree', x, y + 1, 1, 1, r.int(0, 2))
+    }
+    return ok
+  })
+  tryPlace(8, 200, (r) => place('debris', anyX(r), anyY(r), 1, 1, r.int(0, 1)))
+  tryPlace(5, 120, (r) => place(r.next() < 0.5 ? 'barrel' : 'tires', anyX(r), anyY(r), 1, 1, 0))
+
+  // Faroles a los lados de las carreteras (decoración).
+  for (let y = FOREST + 2; y < POND.y - 1; y += 4) place('lamp', CX - 1, y, 1, 1, 0, Tile.GRASS)
+  for (let x = FOREST + 2; x < POND.x - 1; x += 5) place('lamp', x, CY + 1, 1, 1, 0, Tile.GRASS)
 
   // Parches de tierra (solo visual, se puede caminar).
-  for (let i = 0; i < 6; i++) {
-    const x = rng.int(2, MAP_W - 4)
-    const y = rng.int(2, MAP_H - 4)
+  for (let i = 0; i < 10; i++) {
+    const x = rng.int(FOREST, MAP_W - FOREST - 2)
+    const y = rng.int(FOREST, MAP_H - FOREST - 2)
     for (const [ox, oy] of [[x, y], [MAP_W - x - 2, MAP_H - y - 2]])
       for (let yy = oy; yy < oy + 2; yy++)
         for (let xx = ox; xx < ox + 2; xx++) if (tiles[idx(xx, yy)] === Tile.GRASS && ground[idx(xx, yy)] === Ground.GRASS) ground[idx(xx, yy)] = Ground.DIRT

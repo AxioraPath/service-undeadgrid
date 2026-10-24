@@ -2,8 +2,9 @@
 // para moverlo a shared/ cuando exista el servidor autoritativo.
 
 export const TILE = 32
-export const MAP_W = 32
-export const MAP_H = 24
+// Tamaño tomado de los mapas de referencia (Diseños/Mapas): ~1408 × 1024 px con casillas de 32 px.
+export const MAP_W = 44
+export const MAP_H = 32
 export const BASE_SIZE = 8
 
 export const TICK_RATE = 30

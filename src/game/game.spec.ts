@@ -2,15 +2,15 @@ import { gameInputSchema } from '../contracts/game';
 import { MAP_H, MAP_W, PLAYER, STRUCTURES, WEAPONS } from './constants';
 import { createMatch, previewBuild, step } from './engine';
 import { applyDamage, clamp, heal, lerp, zombieCount, zombieDamage, zombieHp } from './formulas';
-import { generateMap, isMapReachable, Tile } from './mapgen';
+import { generateMap, Ground, isMapReachable, Tile } from './mapgen';
 
 /** Pruebas unitarias de las reglas del juego (matriz del PDF: mapa, daño, Zod, interpolación). */
 describe('Generador de mapas', () => {
-  it('la cuadrícula mide 32 × 24 y tiene borde de muros', () => {
+  it(`la cuadrícula mide ${MAP_W} × ${MAP_H} y tiene borde de muros`, () => {
     const map = generateMap(1234);
     expect(map.w).toBe(MAP_W);
     expect(map.h).toBe(MAP_H);
-    expect(map.tiles).toHaveLength(32 * 24);
+    expect(map.tiles).toHaveLength(MAP_W * MAP_H);
     for (let x = 0; x < MAP_W; x++) {
       expect(map.tiles[x]).toBe(Tile.BORDER);
       expect(map.tiles[(MAP_H - 1) * MAP_W + x]).toBe(Tile.BORDER);
@@ -26,6 +26,15 @@ describe('Generador de mapas', () => {
     const b = generateMap(42);
     expect(Array.from(a.tiles)).toEqual(Array.from(b.tiles));
     expect(a.objects).toEqual(b.objects);
+  });
+
+  it('el estanque central se cruza por puentes y el mapa es simétrico', () => {
+    const map = generateMap(77);
+    const bridges = [...map.ground].filter((g) => g === Ground.BRIDGE).length;
+    expect(bridges).toBeGreaterThanOrEqual(8);
+    for (let y = 0; y < MAP_H; y++)
+      for (let x = 0; x < MAP_W; x++)
+        expect(map.tiles[y * MAP_W + x]).toBe(map.tiles[(MAP_H - 1 - y) * MAP_W + (MAP_W - 1 - x)]);
   });
 
   it('las bases y los puntos de zombis son alcanzables (BFS)', () => {
