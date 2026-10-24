@@ -89,15 +89,15 @@ export interface GamePlayerDto {
   inBase: boolean;
   onCrate: boolean;
   /** Qué haría el botón de acción en la casilla de enfrente (solo dentro de la base). */
-  buildHint: { x: number; y: number; ok: boolean; label: string } | null;
+  buildHint: { x: number; y: number; ok: boolean; label: string; orient: 'h' | 'v' } | null;
 }
 
 /** [id, x, y, hp, maxHp, kind(0 normal | 1 rápido | 2 tanque), attackAt, hurtAt] */
 export type ZombieTuple = [number, number, number, number, number, number, number, number];
 /** [id, x, y, vx, vy] */
 export type BulletTuple = [number, number, number, number, number];
-/** [casilla, tipo(0 madera | 1 reforzada | 2 trampa), hp, maxHp, dueño] */
-export type StructureTuple = [number, number, number, number, Slot];
+/** [casilla, tipo(0 madera | 1 reforzada | 2 trampa), hp, maxHp, dueño, orientación('h' | 'v')] */
+export type StructureTuple = [number, number, number, number, Slot, 'h' | 'v'];
 
 export type GameEventDto =
   | { type: 'shot'; x: number; y: number; dirX: number; dirY: number; slot: Slot }

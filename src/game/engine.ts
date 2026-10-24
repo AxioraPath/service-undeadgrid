@@ -109,11 +109,15 @@ export interface Bullet {
   traveled: number
 }
 
+export type WallOrient = 'h' | 'v'
+
 export interface Structure {
   type: 'wood' | 'reinforced' | 'trap'
   hp: number
   maxHp: number
   owner: Slot
+  /** Wall orientation chosen at build time (traps use 'h' and ignore it). */
+  orient: WallOrient
 }
 
 export interface Core {
@@ -294,28 +298,35 @@ export function frontTile(p: Player): Point {
   return { x: Math.floor(p.x), y }
 }
 
-export type BuildPreview = { x: number; y: number; ok: boolean; lacks: boolean; label: string }
+/** Orientation of a wall placed by this player: facing up/down => vertical, left/right => horizontal.
+ * Uses the same dominant axis as frontTile. */
+export const wallOrientFor = (p: Player): WallOrient => (Math.abs(p.dirX) >= Math.abs(p.dirY) ? 'h' : 'v')
+
+export type BuildPreview = { x: number; y: number; ok: boolean; lacks: boolean; label: string; orient: WallOrient }
 
 /** Qué haría el botón de acción en la casilla de enfrente (orden del documento). */
 export function previewBuild(s: MatchState, p: Player): BuildPreview {
   const { x, y } = frontTile(p)
-  const need = (has: boolean, label: string): BuildPreview => ({ x, y, ok: has, lacks: !has, label })
+  const existing = s.structures.get(tileIndex(x, y))
+  // Upgrading/repairing keeps the existing wall's orientation; new walls use the builder's facing.
+  const orient: WallOrient = existing && existing.type !== 'trap' ? existing.orient : wallOrientFor(p)
+  const need = (has: boolean, label: string): BuildPreview => ({ x, y, ok: has, lacks: !has, label, orient })
   const base = s.map.bases[p.slot]
   const crate = s.map.crates[p.slot]
   if (!inRect(base, x, y) || isCoreTile(s, x, y) || (crate.x === x && crate.y === y))
-    return { x, y, ok: false, lacks: false, label: 'No se puede construir aquí' }
+    return { x, y, ok: false, lacks: false, label: 'No se puede construir aquí', orient }
 
   const st = s.structures.get(tileIndex(x, y))
   if (st && st.type !== 'trap' && st.hp < st.maxHp)
     return need(p.wood >= STRUCTURES.repair.wood, `Reparar pared (${STRUCTURES.repair.wood} madera)`)
   if (st?.type === 'wood')
     return need(p.metal >= STRUCTURES.reinforced.metal, `Reforzar pared (${STRUCTURES.reinforced.metal} metal)`)
-  if (st) return { x, y, ok: false, lacks: false, label: st.type === 'trap' ? 'Ya hay una trampa' : 'Pared al máximo' }
+  if (st) return { x, y, ok: false, lacks: false, label: st.type === 'trap' ? 'Ya hay una trampa' : 'Pared al máximo', orient }
 
   const occupied =
     p.build === 'wall' &&
     [...s.players.filter((o) => o.alive), ...s.zombies].some((e) => Math.abs(e.x - (x + 0.5)) < 0.8 && Math.abs(e.y - (y + 0.5)) < 0.8)
-  if (occupied) return { x, y, ok: false, lacks: false, label: 'Casilla ocupada' }
+  if (occupied) return { x, y, ok: false, lacks: false, label: 'Casilla ocupada', orient }
   if (p.build === 'wall') return need(p.wood >= STRUCTURES.woodWall.wood, `Pared de madera (${STRUCTURES.woodWall.wood} madera)`)
   return need(p.metal >= STRUCTURES.trap.metal, `Trampa de púas (${STRUCTURES.trap.metal} metal)`)
 }
@@ -371,10 +382,10 @@ function tryBuild(s: MatchState, p: Player) {
     st.maxHp = STRUCTURES.reinforced.hp
   } else if (p.build === 'wall') {
     p.wood -= STRUCTURES.woodWall.wood
-    s.structures.set(key, { type: 'wood', hp: STRUCTURES.woodWall.hp, maxHp: STRUCTURES.woodWall.hp, owner: p.slot })
+    s.structures.set(key, { type: 'wood', hp: STRUCTURES.woodWall.hp, maxHp: STRUCTURES.woodWall.hp, owner: p.slot, orient: pv.orient })
   } else {
     p.metal -= STRUCTURES.trap.metal
-    s.structures.set(key, { type: 'trap', hp: 1, maxHp: 1, owner: p.slot })
+    s.structures.set(key, { type: 'trap', hp: 1, maxHp: 1, owner: p.slot, orient: 'h' })
   }
   if (!repaired) p.structuresBuilt++
   s.events.push({ type: 'built', x: pv.x, y: pv.y, what: pv.label })

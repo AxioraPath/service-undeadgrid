@@ -1,6 +1,7 @@
 import { gameInputSchema } from '../contracts/game';
 import { MAP_H, MAP_W, PLAYER, STRUCTURES, WEAPONS } from './constants';
-import { createMatch, previewBuild, step } from './engine';
+import { createMatch, frontTile, previewBuild, step } from './engine';
+import { encodeState } from './snapshot';
 import { applyDamage, clamp, heal, lerp, zombieCount, zombieDamage, zombieHp } from './formulas';
 import { generateMap, Ground, isMapReachable, Tile } from './mapgen';
 
@@ -92,5 +93,76 @@ describe('Simulación', () => {
     const y0 = p.y;
     for (let i = 0; i < 6; i++) step(s, { a: { up: false, down: true, left: false, right: false, action: false } }, [], 1 / 30);
     expect(p.y - y0).toBeCloseTo((PLAYER.speed * 6) / 30, 5);
+  });
+});
+
+describe('Wall orientation', () => {
+  const idle = { up: false, down: false, left: false, right: false, action: false };
+  const setup = (dirX: number, dirY: number) => {
+    const s = createMatch({ seed: 5, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'explorador' }] });
+    const p = s.players[0];
+    const b = s.map.bases[1];
+    Object.assign(p, { dirX, dirY, wood: 50, metal: 50, build: 'wall' });
+    // First spot in the base where the front tile is buildable (cores/crate occupy some tiles).
+    for (let y = b.y; y < b.y + b.h; y++)
+      for (let x = b.x; x < b.x + b.w; x++) {
+        Object.assign(p, { x: x + 0.5, y: y + 0.5 });
+        if (previewBuild(s, p).ok) return { s, p };
+      }
+    throw new Error('no buildable spot');
+  };
+  const press = (s: ReturnType<typeof setup>['s']) => {
+    step(s, { a: { ...idle, action: true } }, [], 1 / 30);
+    step(s, { a: idle }, [], 1 / 30);
+  };
+
+  it.each([
+    [0, -1, 'v'],
+    [0, 1, 'v'],
+    [1, 0, 'h'],
+    [-1, 0, 'h'],
+  ])('facing (%i,%i) builds an orient=%s wall on the front tile', (dx, dy, orient) => {
+    const { s, p } = setup(dx, dy);
+    const t = frontTile(p);
+    expect(previewBuild(s, p).orient).toBe(orient);
+    press(s);
+    const st = s.structures.get(t.y * s.map.w + t.x);
+    expect(st?.type).toBe('wood');
+    expect(st?.orient).toBe(orient);
+  });
+
+  it('keeps the orientation when reinforcing, even facing another axis, and exposes it in the snapshot', () => {
+    const { s, p } = setup(0, -1);
+    const t = frontTile(p);
+    press(s);
+    // Damage so first press repairs, then reinforce: face sideways at the same tile is not possible, so only check preview.
+    const st = s.structures.get(t.y * s.map.w + t.x)!;
+    Object.assign(p, { dirX: 0, dirY: -1 });
+    press(s);
+    expect(st.type).toBe('reinforced');
+    expect(st.orient).toBe('v');
+    const snap = encodeState(s, false);
+    const tuple = snap.structures.find((x) => x[0] === t.y * s.map.w + t.x)!;
+    expect(tuple[1]).toBe(1);
+    expect(tuple[5]).toBe('v');
+    expect(snap.players[0].buildHint?.orient).toBeDefined();
+  });
+
+  it('reports the existing wall orientation in the preview of an upgrade', () => {
+    const { s, p } = setup(1, 0);
+    const t = frontTile(p);
+    press(s);
+    // Approach the same tile along the vertical axis: preview must still say 'h'.
+    Object.assign(p, { x: t.x + 0.5, y: t.y - 0.5, dirX: 0, dirY: 1 });
+    expect(frontTile(p)).toEqual(t);
+    expect(previewBuild(s, p).orient).toBe('h');
+  });
+
+  it('traps carry a neutral h orientation', () => {
+    const { s, p } = setup(0, 1);
+    p.build = 'trap';
+    const t = frontTile(p);
+    press(s);
+    expect(s.structures.get(t.y * s.map.w + t.x)).toMatchObject({ type: 'trap', orient: 'h' });
   });
 });
