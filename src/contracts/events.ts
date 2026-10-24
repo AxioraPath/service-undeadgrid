@@ -92,6 +92,8 @@ export interface SocketData {
   sessionId?: string;
   roomCode?: string;
   slot?: Slot;
+  /** Id de la cuenta real si el socket se autenticó con JWT. */
+  userId?: string;
 }
 
 /** No usamos eventos entre servidores (sin adaptador multi-nodo por ahora). */

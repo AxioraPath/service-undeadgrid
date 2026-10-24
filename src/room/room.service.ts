@@ -64,7 +64,7 @@ export class RoomService {
   // ---- Crear / unirse ----
 
   /** Crea una sala nueva y mete al creador como host en el slot 1. */
-  create(params: { name: string; socketId: string; survivor?: string }): JoinOutcome {
+  create(params: { name: string; socketId: string; survivor?: string; userId?: string | null }): JoinOutcome {
     const now = this.now();
     const code = this.uniqueCode();
     const room = new Room(code, randomSeed(), now);
@@ -76,6 +76,7 @@ export class RoomService {
       slot: 1,
       isHost: true,
       survivor: params.survivor,
+      userId: params.userId ?? null,
     });
     room.addPlayer(player);
     room.hostSlot = 1;
@@ -95,6 +96,7 @@ export class RoomService {
     socketId: string;
     survivor?: string;
     sessionId?: string;
+    userId?: string | null;
   }): JoinOutcome {
     const room = this.require(params.code);
 
@@ -109,6 +111,7 @@ export class RoomService {
           );
         }
         existing.markReconnected(params.socketId);
+        if (params.userId) existing.userId = params.userId;
         this.logger.log(`Reconexión ${room.code} slot ${existing.slot} "${existing.name}"`);
         return { room, player: existing, reconnected: true };
       }
@@ -136,6 +139,7 @@ export class RoomService {
       slot,
       isHost: false,
       survivor: params.survivor,
+      userId: params.userId ?? null,
     });
     room.addPlayer(player);
 

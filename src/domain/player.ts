@@ -18,6 +18,8 @@ export class Player {
   ready = false;
   survivor: string = DEFAULT_SURVIVOR;
   survivorConfirmed = false;
+  /** Id de la cuenta real (si el socket venía autenticado con JWT); null si invitado. */
+  userId: string | null = null;
   /** Epoch ms en que se desconectó; null si está conectado. */
   disconnectedAt: number | null = null;
 
@@ -28,6 +30,7 @@ export class Player {
     slot: Slot;
     isHost: boolean;
     survivor?: string;
+    userId?: string | null;
   }) {
     this.sessionId = params.sessionId;
     this.socketId = params.socketId;
@@ -35,6 +38,7 @@ export class Player {
     this.slot = params.slot;
     this.isHost = params.isHost;
     if (params.survivor) this.survivor = params.survivor;
+    this.userId = params.userId ?? null;
   }
 
   get connected(): boolean {

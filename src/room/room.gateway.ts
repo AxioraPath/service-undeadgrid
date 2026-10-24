@@ -45,6 +45,8 @@ import { RateLimiterService } from '../common/rate-limiter.service';
 import type { Room } from '../domain/room';
 import { PhaseOrchestrator } from './phase-orchestrator.service';
 import { RoomService } from './room.service';
+import { AuthService } from '../auth/auth.service';
+import { MatchStatsService } from '../stats/match-stats.service';
 
 type AppServer = Server<
   ClientToServerEvents,
@@ -93,6 +95,8 @@ export class RoomGateway
     private readonly rooms: RoomService,
     private readonly orchestrator: PhaseOrchestrator,
     private readonly limiter: RateLimiterService,
+    private readonly auth: AuthService,
+    private readonly matchStats: MatchStatsService,
   ) {}
 
   // ---- Ciclo de vida del gateway ----
@@ -108,6 +112,8 @@ export class RoomGateway
     this.orchestrator.onMatchOver = (room) => {
       this.emitState(room);
       this.server.to(room.code).emit('match:over', room.toSnapshot(this.rooms.now()));
+      // Persistir resultado + estadísticas (no bloquea el flujo del juego).
+      void this.matchStats.persistMatch(room);
     };
     this.orchestrator.onRoomsClosed = (codes) => {
       for (const code of codes) {
@@ -118,8 +124,25 @@ export class RoomGateway
     this.logger.log('RoomGateway inicializado');
   }
 
-  handleConnection(client: AppSocket): void {
+  async handleConnection(client: AppSocket): Promise<void> {
     this.logger.debug(`Conexión ${client.id}`);
+    // Autenticación opcional por JWT: el cliente puede enviar el access token en
+    // handshake.auth.token o en el header Authorization. Si es válido, asociamos
+    // la cuenta real; si no, el jugador entra como invitado.
+    const raw =
+      (client.handshake.auth?.token as string | undefined) ||
+      (client.handshake.headers?.authorization?.startsWith('Bearer ')
+        ? client.handshake.headers.authorization.slice(7)
+        : undefined);
+    if (raw) {
+      try {
+        const payload = await this.auth.verifyAccess(raw);
+        client.data.userId = payload.sub;
+        this.logger.debug(`Socket ${client.id} autenticado como userId=${payload.sub}`);
+      } catch {
+        // Token inválido/expirado: se trata como invitado, no se rechaza la conexión.
+      }
+    }
   }
 
   handleDisconnect(client: AppSocket): void {
@@ -241,6 +264,7 @@ export class RoomGateway
         name: payload.name,
         socketId: client.id,
         survivor: payload.survivor,
+        userId: client.data.userId ?? null,
       });
       this.bindSocket(client, room, player.slot, player.sessionId);
       return {
@@ -265,6 +289,7 @@ export class RoomGateway
         socketId: client.id,
         survivor: payload.survivor,
         sessionId: payload.sessionId,
+        userId: client.data.userId ?? null,
       });
       this.bindSocket(client, room, player.slot, player.sessionId);
 
