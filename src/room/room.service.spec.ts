@@ -203,4 +203,100 @@ describe('RoomService (flujo 1v1)', () => {
     expect(room.hostSlot).toBe(2);
     expect(room.players.get(2)!.isHost).toBe(true);
   });
+  describe('resultados: revancha y volver al lobby', () => {
+    /** Finishes a match (core 2 destroyed) and returns the room in `results`. */
+    const finishMatch = () => {
+      const room = startMatch();
+      advance(61_000);
+      svc.tickCombat(room);
+      room.match!.cores[2].hp = 0;
+      const bob = room.match!.players.find((p) => p.slot === 2)!;
+      bob.alive = false;
+      bob.respawnAt = null;
+      advance(100);
+      svc.tickCombat(room);
+      expect(room.status).toBe('results');
+      return room;
+    };
+
+    it('rechaza revancha y volver al lobby fuera de results con BAD_STATE', () => {
+      const room = startMatch();
+      expect(() => svc.requestRematch(room.code, 's1')).toThrow(/resultados/i);
+      expect(() => svc.cancelRematch(room.code, 's1')).toThrow(/resultados/i);
+      expect(() => svc.backToLobby(room.code, 's1')).toThrow(/resultados/i);
+    });
+
+    it('con una sola petición solo marca el slot; cancelar lo limpia', () => {
+      const room = finishMatch();
+      const r = svc.requestRematch(room.code, 's1');
+      expect(r.started).toBe(false);
+      expect([...room.rematch]).toEqual([1]);
+      svc.cancelRematch(room.code, 's1');
+      expect(room.rematch.size).toBe(0);
+      expect(room.status).toBe('results');
+    });
+
+    it('cuando ambos piden revancha: misma config, nueva seed, preparation y combate normal', () => {
+      const room = finishMatch();
+      const oldSeed = room.seed;
+      const map = room.mapId;
+      const survivors = [...room.players.values()].map((p) => p.survivor);
+      svc.requestRematch(room.code, 's1');
+      const r = svc.requestRematch(room.code, 's2');
+
+      expect(r.started).toBe(true);
+      expect(room.status).toBe('preparation');
+      expect(room.seed).not.toBe(oldSeed);
+      expect(room.mapId).toBe(map);
+      expect([...room.players.values()].map((p) => p.survivor)).toEqual(survivors);
+      expect(room.players.get(1)!.survivorConfirmed).toBe(true);
+      expect(room.match).toBeNull();
+      expect(room.result).toBeNull();
+      expect(room.rematch.size).toBe(0);
+      expect(room.cores).toEqual({ 1: CORE_HP, 2: CORE_HP });
+
+      svc.beginCombat(room);
+      expect(room.status).toBe('combat');
+      expect(room.match!.cores[2].hp).toBe(CORE_HP);
+      expect(room.match!.coreDamageDealt).toEqual({ 1: 0, 2: 0 });
+    });
+
+    it('una petición de revancha de un jugador solo (rival se fue) da BAD_STATE', () => {
+      const room = finishMatch();
+      svc.leave(room.code, 's2');
+      expect(() => svc.requestRematch(room.code, 's1')).toThrow(/rival/i);
+    });
+
+    it('si el rival se va, se limpian las peticiones', () => {
+      const room = finishMatch();
+      svc.requestRematch(room.code, 's1');
+      svc.handleDisconnect('s2');
+      expect(room.rematch.size).toBe(0);
+    });
+
+    it('backToLobby resetea a lobby para ambos y conserva mapa/dificultad/jugadores', () => {
+      const room = finishMatch();
+      room.mapId = 'distrito-industrial';
+      room.difficulty = 'Difícil';
+      svc.requestRematch(room.code, 's1');
+      svc.backToLobby(room.code, 's2');
+
+      expect(room.status).toBe('lobby');
+      expect(room.match).toBeNull();
+      expect(room.result).toBeNull();
+      expect(room.rematch.size).toBe(0);
+      expect(room.mapId).toBe('distrito-industrial');
+      expect(room.difficulty).toBe('Difícil');
+      expect(room.players.size).toBe(2);
+      for (const p of room.players.values()) {
+        expect(p.ready).toBe(false);
+        expect(p.survivorConfirmed).toBe(false);
+      }
+      // The lobby flow works again.
+      svc.setReady(room.code, 's1', true);
+      svc.setReady(room.code, 's2', true);
+      svc.start(room.code, 's1');
+      expect(room.status).toBe('selection');
+    });
+  });
 });

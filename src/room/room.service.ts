@@ -372,6 +372,52 @@ export class RoomService {
     );
   }
 
+  // ---- Resultados: revancha / volver al lobby ----
+
+  private requireResults(code: string, socketId: string) {
+    const ctx = this.playerInRoom(code, socketId);
+    if (ctx.room.status !== 'results') {
+      throw new DomainError(ErrorCode.BAD_STATE, 'Solo disponible en la pantalla de resultados');
+    }
+    return ctx;
+  }
+
+  /**
+   * Marks the caller as requesting a rematch. When both players asked, the room
+   * is reset into `preparation` with a new seed (same map/difficulty/survivors).
+   */
+  requestRematch(code: string, socketId: string): { room: Room; started: boolean } {
+    const { room, player } = this.requireResults(code, socketId);
+    const everyoneHere =
+      room.players.size === ROOM_CAPACITY && [...room.players.values()].every((p) => p.connected);
+    if (!everyoneHere) {
+      throw new DomainError(ErrorCode.BAD_STATE, 'Tu rival ya no está en la sala');
+    }
+    room.rematch.add(player.slot);
+    this.bump(room);
+    if (room.rematch.size === ROOM_CAPACITY) {
+      room.resetForRematch(randomSeed());
+      this.logger.log(`Sala ${room.code}: revancha -> preparación (seed ${room.seed})`);
+      return { room, started: true };
+    }
+    return { room, started: false };
+  }
+
+  cancelRematch(code: string, socketId: string): Room {
+    const { room, player } = this.requireResults(code, socketId);
+    room.rematch.delete(player.slot);
+    this.bump(room);
+    return room;
+  }
+
+  /** Both players go back to the lobby (results -> lobby). */
+  backToLobby(code: string, socketId: string): Room {
+    const { room } = this.requireResults(code, socketId);
+    room.resetToLobby();
+    this.logger.log(`Sala ${room.code}: de vuelta al lobby`);
+    return room;
+  }
+
   // ---- Chat ----
 
   chat(code: string, socketId: string, text: string) {
@@ -422,6 +468,7 @@ export class RoomService {
     player: Player,
     voluntary: boolean,
   ): { room: Room; player: Player; closed: boolean } {
+    room.rematch.clear();
     // Si la partida está en curso y un jugador se va, el rival gana por abandono.
     if (room.status === 'combat' || room.status === 'preparation') {
       const rivalSlot: Slot = player.slot === 1 ? 2 : 1;

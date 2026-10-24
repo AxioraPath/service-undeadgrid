@@ -45,6 +45,13 @@ export const DEFAULT_SURVIVOR = UNLOCKED_SURVIVORS[0];
 /** Mapas disponibles (espeja MAPS de catalog.ts). */
 export const MAP_IDS = ['ciudad-abandonada', 'desierto-ferroviario', 'distrito-industrial'] as const;
 
+/** Spanish display names for the maps (used in the match results payload). */
+export const MAP_NAMES: Record<(typeof MAP_IDS)[number], string> = {
+  'ciudad-abandonada': 'Ciudad abandonada',
+  'desierto-ferroviario': 'Desierto ferroviario',
+  'distrito-industrial': 'Distrito industrial',
+};
+
 /** Dificultades (espeja DIFFICULTIES de catalog.ts). */
 export const DIFFICULTIES = ['Estándar', 'Difícil'] as const;
 
@@ -76,6 +83,10 @@ export const RATE_LIMITS = {
   'lobby:start': { points: 10, windowMs: 10_000 },
   'lobby:leave': { points: 10, windowMs: 10_000 },
   'lobby:rename': { points: 20, windowMs: 10_000 },
+  'lobby:backToLobby': { points: 10, windowMs: 10_000 },
+  // revancha en la pantalla de resultados
+  'match:rematchRequest': { points: 10, windowMs: 10_000 },
+  'match:rematchCancel': { points: 10, windowMs: 10_000 },
   // chat: más permisivo pero acotado
   'chat:send': { points: 10, windowMs: 5_000 },
   // ping de latencia

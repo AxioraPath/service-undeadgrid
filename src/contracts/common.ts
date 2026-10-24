@@ -78,3 +78,31 @@ export type Ack<T = undefined> =
 
 export const ok = <T>(data: T): Ack<T> => ({ ok: true, data });
 export const fail = (error: ApiError): Ack<never> => ({ ok: false, error });
+
+/** Per-player stats shown on the results screen. */
+export interface MatchPlayerStats {
+  zombieKills: number;
+  structuresBuilt: number;
+  /** HP of the enemy core removed by this player's side (player bullets). */
+  coreDamageDealt: number;
+  /** Remaining HP percentage (0-100) of this player's OWN core. */
+  coreHpPct: number;
+}
+
+/** Payload of `match:over`: the room snapshot plus the results-screen details. */
+export interface MatchOverPayload {
+  /** XP earned per slot. */
+  xp?: Record<number, number>;
+  stats: Record<number, MatchPlayerStats>;
+  durationS: number;
+  winner: Slot | null;
+  reason: MatchResult['reason'];
+  /** Spanish display name of the map. */
+  mapName: string;
+}
+
+/** Payload of `match:rematchState`. */
+export interface RematchStateData {
+  /** Slots currently requesting a rematch. */
+  requested: number[];
+}

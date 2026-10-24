@@ -1,5 +1,5 @@
 import type { Slot } from '../config/game.config';
-import type { Ack } from './common';
+import type { Ack, MatchOverPayload, RematchStateData } from './common';
 import type {
   ChatSendPayload,
   CreateRoomPayload,
@@ -51,6 +51,12 @@ export interface ClientToServerEvents {
     ack: (r: Ack<RoomSnapshot>) => void,
   ) => void;
   'lobby:start': (ack: (r: Ack<RoomSnapshot>) => void) => void;
+  /** Back to the lobby for both players. Only valid in `results`. */
+  'lobby:backToLobby': (ack: (r: Ack<RoomSnapshot>) => void) => void;
+  /** Ask for a rematch (same map/difficulty/survivors, new seed). Only valid in `results`. */
+  'match:rematchRequest': (ack: (r: Ack) => void) => void;
+  /** Withdraw the rematch request. Only valid in `results`. */
+  'match:rematchCancel': (ack: (r: Ack) => void) => void;
   'chat:send': (p: ChatSendPayload, ack: (r: Ack<ChatMessageSnapshot>) => void) => void;
   /** Controles del jugador (el servidor guarda el último). Sin respuesta para no gastar red. */
   'game:input': (p: GameInputPayload, ack?: (r: Ack) => void) => void;
@@ -82,7 +88,9 @@ export interface ServerToClientEvents {
   /** Tick de reloj de combate (1 Hz). */
   'combat:tick': (data: CombatSnapshot) => void;
   /** La partida terminó. */
-  'match:over': (room: RoomSnapshot & { xp?: Record<number, number> }) => void;
+  'match:over': (room: RoomSnapshot & MatchOverPayload) => void;
+  /** Slots requesting a rematch; emitted on every change (and with [] when cleared). */
+  'match:rematchState': (data: RematchStateData) => void;
   /** Estado de la simulación, 30 veces por segundo durante el combate. */
   'game:state': (state: GameStateDto) => void;
 }

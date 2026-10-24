@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { Room } from '../domain/room';
-import type { Slot } from '../config/game.config';
+import { CORE_HP, MAP_NAMES, type Slot } from '../config/game.config';
+import type { MatchOverPayload, MatchPlayerStats } from '../contracts';
 import { ProgressionService } from '../progression/progression.service';
 import { MIN_MATCH_DURATION_S, computeMatchXp } from '../progression/xp';
 
@@ -38,6 +39,33 @@ export function matchSummary(room: Room): {
     };
   }
   return { durationS: Math.round(match.time), maxWave: match.maxWave, bySlot };
+}
+
+/**
+ * Results-screen details for a finished match (the extra fields of `match:over`).
+ * Uses the engine data when present; without a match everything is zero.
+ */
+export function matchOverDetails(room: Room): Omit<MatchOverPayload, 'xp'> {
+  const result = room.result;
+  const { durationS, bySlot } = matchSummary(room);
+  const stats: Record<number, MatchPlayerStats> = {};
+  for (const slot of [1, 2] as const) {
+    const hp = result?.cores[slot] ?? room.cores[slot];
+    stats[slot] = {
+      zombieKills: bySlot[slot].zombieKills,
+      structuresBuilt: bySlot[slot].structuresBuilt,
+      coreDamageDealt: room.match?.coreDamageDealt[slot] ?? 0,
+      coreHpPct: Math.max(0, Math.min(100, Math.round((hp / CORE_HP) * 100))),
+    };
+  }
+  const mapNames = MAP_NAMES as Record<string, string>;
+  return {
+    stats,
+    durationS,
+    winner: result?.winner ?? null,
+    reason: result?.reason ?? 'time_out',
+    mapName: mapNames[room.mapId] ?? room.mapId,
+  };
 }
 
 /** XP earned per slot for a finished match (same function used for persistence and the match:over event). */

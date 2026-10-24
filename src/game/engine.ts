@@ -149,6 +149,8 @@ export interface MatchState {
   bullets: Bullet[]
   structures: Map<number, Structure>
   cores: Record<Slot, Core>
+  /** HP of the ENEMY core removed by each slot's player bullets (stat only, never read by the simulation). */
+  coreDamageDealt: Record<Slot, number>
   crates: Record<Slot, Stock>
   spawn: { remaining: number; nextAt: number; interval: number; wave: number; cursor: number }
   nextId: number
@@ -218,6 +220,7 @@ export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
     bullets: [],
     structures: new Map(),
     cores: { 1: { slot: 1, hp: CORE_HP }, 2: { slot: 2, hp: CORE_HP } },
+    coreDamageDealt: { 1: 0, 2: 0 },
     crates: { 1: { ...CRATE_START }, 2: { ...CRATE_START } },
     spawn: { remaining: 0, nextAt: 0, interval: 1, wave: 0, cursor: 0 },
     nextId: 1,
@@ -504,7 +507,9 @@ function updateBullets(s: MatchState, dt: number) {
         const enemy: Slot = b.ownerSlot === 1 ? 2 : 1
         const c = s.map.cores[enemy]
         if (pvp && s.cores[enemy].hp > 0 && tx >= c.x && tx < c.x + 2 && ty >= c.y && ty < c.y + 2) {
-          s.cores[enemy].hp = applyDamage(s.cores[enemy].hp, b.damage)
+          const before = s.cores[enemy].hp
+          s.cores[enemy].hp = applyDamage(before, b.damage)
+          s.coreDamageDealt[b.ownerSlot] += before - s.cores[enemy].hp
           s.events.push({ type: 'coreHit', slot: enemy })
         }
         s.events.push({ type: 'hit', x: b.x, y: b.y })

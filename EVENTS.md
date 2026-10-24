@@ -25,6 +25,9 @@ servidor autoritativo (`service-undeadgrid`). Todos los tipos viven en
 lobby ──► selection ──► preparation ──► combat ──► results
   │           │                            
   └───────────┴──────────────────────────────────► results (abandono/limpieza)
+
+results ──► preparation   (revancha: ambos piden `match:rematchRequest`)
+results ──► lobby         (`lobby:backToLobby`)
 ```
 
 | Estado        | Qué ocurre                                                            |
@@ -125,6 +128,31 @@ Transiciona `lobby → selection`.
 - **Payload:** *(ninguno)* · **Ack:** `Ack<RoomSnapshot>` · **Push:** `lobby:state`
 - **Errores:** `NOT_HOST`, `BAD_STATE`.
 
+### `lobby:backToLobby`
+Vuelve al lobby **para ambos jugadores**. Solo en `results`. Limpia la partida,
+el resultado, los flags de listo/confirmación y las peticiones de revancha;
+conserva mapa, dificultad y jugadores. Salir de la sala por completo sigue siendo `lobby:leave`.
+
+- **Payload:** *(ninguno)* · **Ack:** `Ack<RoomSnapshot>`
+- **Push:** `match:rematchState { requested: [] }` + `lobby:state`
+- **Errores:** `BAD_STATE` (fuera de `results`).
+
+### `match:rematchRequest`
+Pide revancha. Solo en `results` y con ambos jugadores conectados. Cuando **ambos**
+la piden, la sala pasa a `preparation` con el mismo mapa, dificultad y supervivientes
+(confirmados), **semilla nueva**, y tras 3 s arranca el combate por el camino normal
+(`combat:phase`, `game:state`...). La partida anterior ya fue persistida: no se cuenta dos veces.
+
+- **Payload:** *(ninguno)* · **Ack:** `Ack<void>`
+- **Push:** `match:rematchState` siempre; si ambos pidieron: `match:rematchState { requested: [] }` + `lobby:state` (status `preparation`).
+- **Errores:** `BAD_STATE` (fuera de `results`, o "Tu rival ya no está en la sala").
+
+### `match:rematchCancel`
+Retira la petición de revancha del que llama. Solo en `results`.
+
+- **Payload:** *(ninguno)* · **Ack:** `Ack<void>` · **Push:** `match:rematchState`
+- **Errores:** `BAD_STATE`.
+
 ### `chat:send`
 Envía un mensaje de chat (se recorta a 120 caracteres).
 
@@ -172,7 +200,8 @@ Medición de latencia una vez conectado el socket.
 | `chat:message`             | `ChatMessageSnapshot`                               | Nuevo mensaje de chat.                   |
 | `combat:phase`             | `CombatSnapshot`                                    | Cambio de fase de combate.               |
 | `combat:tick`              | `CombatSnapshot`                                    | Tick de reloj de combate (1 Hz).         |
-| `match:over`               | `RoomSnapshot & { xp?: { [slot]: number } }`                                    | Fin de la partida.                       |
+| `match:over`               | `MatchOverPayload` (ver abajo)                      | Fin de la partida.                       |
+| `match:rematchState`       | `{ requested: number[] }`                           | Cambió el conjunto de slots que piden revancha (también `[]` al limpiarse: rival se va, revancha iniciada, volver al lobby). |
 | `game:state`               | `GameStateDto`                                      | Estado de la simulación, 30 veces por segundo en combate. |
 
 ---
@@ -226,6 +255,26 @@ entre los dos últimos estados y nunca decide posición, vida, daño ni inventar
 ```ts
 { id: number; slot: 1 | 2; author: string; text: string; at: number }
 ```
+
+### `match:over` payload
+`RoomSnapshot & MatchOverPayload`:
+```ts
+{
+  ...RoomSnapshot,        // result, mapId, code, players (con survivor)...
+  xp?: { [slot]: number },
+  stats: { [slot: number]: {
+    zombieKills: number
+    structuresBuilt: number
+    coreDamageDealt: number   // HP del núcleo ENEMIGO quitado por las balas de ese jugador
+    coreHpPct: number         // % (0-100) de vida restante del PROPIO núcleo
+  } },
+  durationS: number,
+  winner: 1 | 2 | null,
+  reason: 'core_destroyed' | 'time_out' | 'opponent_left',
+  mapName: string           // nombre en español, p. ej. "Ciudad abandonada"
+}
+```
+Si la partida acaba por abandono el payload se re-emite con los mismos campos.
 
 ### `MatchResult`
 ```ts

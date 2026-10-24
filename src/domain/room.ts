@@ -26,7 +26,7 @@ const TRANSITIONS: Record<RoomStatus, readonly RoomStatus[]> = {
   selection: ['preparation', 'lobby', 'results'],
   preparation: ['combat', 'results'],
   combat: ['results'],
-  results: [],
+  results: ['preparation', 'lobby'],
 };
 
 /** Deriva la fase de combate a partir de los segundos transcurridos. */
@@ -45,7 +45,7 @@ export function phaseAt(elapsed: number): PhaseDef {
 export class Room {
   readonly code: string;
   status: RoomStatus = 'lobby';
-  readonly seed: number;
+  seed: number;
   mapId: string = MAP_IDS[0];
   difficulty: string = DIFFICULTIES[0];
   hostSlot: Slot = SLOTS[0];
@@ -70,6 +70,8 @@ export class Room {
   /** Fase emitida por última vez (para detectar cambios). */
   lastPhaseId: PhaseId | null = null;
   result: MatchResult | null = null;
+  /** Slots that asked for a rematch on the results screen. */
+  readonly rematch = new Set<Slot>();
 
   readonly createdAt: number;
   private version = 0;
@@ -230,6 +232,37 @@ export class Room {
     this.status = 'results';
     this.combatStartedAt = null;
     this.touch();
+  }
+
+  /** Clears every trace of the previous match (shared by rematch and back-to-lobby). */
+  private clearMatchState(): void {
+    this.match = null;
+    this.result = null;
+    this.combatStartedAt = null;
+    this.lastPhaseId = null;
+    this.cores = { 1: CORE_HP, 2: CORE_HP };
+    this.inputs.clear();
+    this.actionTaps.clear();
+    this.commands = [];
+    this.rematch.clear();
+  }
+
+  /** results -> preparation with a new seed; survivors stay confirmed. */
+  resetForRematch(seed: number): void {
+    this.transition('preparation');
+    this.seed = seed;
+    this.clearMatchState();
+    for (const p of this.players.values()) p.survivorConfirmed = true;
+  }
+
+  /** results -> lobby: keeps map/difficulty/players, resets ready/confirmation flags. */
+  resetToLobby(): void {
+    this.transition('lobby');
+    this.clearMatchState();
+    for (const p of this.players.values()) {
+      p.ready = false;
+      p.survivorConfirmed = false;
+    }
   }
 
   // ---- Snapshot ----

@@ -48,7 +48,7 @@ import { RoomService } from './room.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { resolvePlayerName } from './resolve-player-name';
 import { AuthService } from '../auth/auth.service';
-import { MatchStatsService, matchXpBySlot } from '../stats/match-stats.service';
+import { MatchStatsService, matchOverDetails, matchXpBySlot } from '../stats/match-stats.service';
 
 type AppServer = Server<
   ClientToServerEvents,
@@ -114,7 +114,7 @@ export class RoomGateway
     };
     this.orchestrator.onMatchOver = (room) => {
       this.emitState(room);
-      this.server.to(room.code).emit('match:over', { ...room.toSnapshot(this.rooms.now()), xp: matchXpBySlot(room) });
+      this.server.to(room.code).emit('match:over', this.matchOverPayload(room));
       // Persistir resultado + estadísticas (no bloquea el flujo del juego).
       void this.matchStats.persistMatch(room);
     };
@@ -180,7 +180,8 @@ export class RoomGateway
       reason: 'disconnected',
     });
     if (room.status === 'results') {
-      this.server.to(room.code).emit('match:over', room.toSnapshot(this.rooms.now()));
+      this.server.to(room.code).emit('match:over', this.matchOverPayload(room));
+      this.emitRematch(room);
     }
     this.emitState(room);
   }
@@ -193,6 +194,18 @@ export class RoomGateway
 
   private emitState(room: Room): void {
     this.server.to(room.code).emit('lobby:state', room.toSnapshot(this.now()));
+  }
+
+  private matchOverPayload(room: Room) {
+    return {
+      ...room.toSnapshot(this.now()),
+      ...matchOverDetails(room),
+      xp: matchXpBySlot(room),
+    };
+  }
+
+  private emitRematch(room: Room): void {
+    this.server.to(room.code).emit('match:rematchState', { requested: [...room.rematch].sort() });
   }
 
   private emitCombat(room: Room, event: 'combat:tick' | 'combat:phase'): void {
@@ -343,10 +356,45 @@ export class RoomGateway
           .to(code)
           .emit('lobby:playerLeft', { slot: player.slot, name: player.name, reason: 'left' });
         if (room.status === 'results') {
-          this.server.to(code).emit('match:over', room.toSnapshot(this.now()));
+          this.server.to(code).emit('match:over', this.matchOverPayload(room));
+          this.emitRematch(room);
         }
         this.emitState(room);
       }
+      return undefined;
+    });
+  }
+
+  @SubscribeMessage('lobby:backToLobby')
+  async onBackToLobby(@ConnectedSocket() client: AppSocket): Promise<Ack<RoomSnapshot>> {
+    return this.handle(client, 'lobby:backToLobby', () => {
+      const code = this.requireRoomCode(client);
+      const room = this.rooms.backToLobby(code, client.id);
+      this.emitRematch(room);
+      this.emitState(room);
+      return room.toSnapshot(this.now());
+    });
+  }
+
+  @SubscribeMessage('match:rematchRequest')
+  async onRematchRequest(@ConnectedSocket() client: AppSocket): Promise<Ack> {
+    return this.handle(client, 'match:rematchRequest', () => {
+      const code = this.requireRoomCode(client);
+      const { room, started } = this.rooms.requestRematch(code, client.id);
+      this.emitRematch(room);
+      if (started) {
+        this.emitState(room);
+        this.orchestrator.scheduleCombatStart(room, COMBAT_START_DELAY_MS);
+      }
+      return undefined;
+    });
+  }
+
+  @SubscribeMessage('match:rematchCancel')
+  async onRematchCancel(@ConnectedSocket() client: AppSocket): Promise<Ack> {
+    return this.handle(client, 'match:rematchCancel', () => {
+      const code = this.requireRoomCode(client);
+      this.emitRematch(this.rooms.cancelRematch(code, client.id));
       return undefined;
     });
   }
