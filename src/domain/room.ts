@@ -72,6 +72,8 @@ export class Room {
   readonly actionTaps = new Set<string>();
   /** Igual para el disparo (`fire`): un clic rápido entre dos ticks no se pierde. */
   readonly fireTaps = new Set<string>();
+  /** Igual para un toque de autoapuntado (`fire` + `autoAim`). */
+  readonly autoAimTaps = new Set<string>();
   /** Comandos pendientes de aplicar en el siguiente tick. */
   commands: { playerId: string; cmd: Command }[] = [];
 
@@ -316,6 +318,7 @@ export class Room {
     this.inputs.clear();
     this.actionTaps.clear();
     this.fireTaps.clear();
+    this.autoAimTaps.clear();
     this.commands = [];
     this.rematch.clear();
   }

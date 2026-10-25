@@ -39,6 +39,8 @@ export const gameInputSchema = z.object({
   aim: aimSchema,
   /** Disparar siempre (clic izquierdo / stick de apuntar), también dentro de la base. */
   fire: z.boolean().optional(),
+  /** Con `fire`: el servidor apunta solo al objetivo más cercano (toque en el celular). */
+  autoAim: z.boolean().optional(),
 });
 export type GameInputPayload = z.infer<typeof gameInputSchema>;
 

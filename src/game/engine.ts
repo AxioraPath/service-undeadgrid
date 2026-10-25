@@ -51,6 +51,8 @@ export interface PlayerInput {
   aim?: { x: number; y: number }
   /** Disparar siempre (clic izquierdo / stick de apuntar), también dentro de tu base. */
   fire?: boolean
+  /** Con `fire`: el servidor apunta solo al objetivo más cercano (toque en el celular, como Brawl Stars). */
+  autoAim?: boolean
 }
 
 /** Cantidad de ticks simulados (el servidor avanza a paso fijo de 1/30 s). */
@@ -382,25 +384,25 @@ const wallAt = (s: MatchState, x: number, y: number) => {
   return st && st.type !== 'trap' ? st : undefined
 }
 
-/** `owner`: el jugador que se mueve atraviesa sus propias paredes y torretas (así nunca queda encerrado). */
-export const isBlocked = (s: MatchState, x: number, y: number, owner?: Slot) => {
+/** `team`: el jugador que se mueve atraviesa las paredes y torretas de su equipo (así nunca queda encerrado). */
+export const isBlocked = (s: MatchState, x: number, y: number, team?: Team) => {
   if (isSolidTileKind(tileAt(s.map, x, y)) || isCoreTile(s, x, y)) return true
   const w = wallAt(s, x, y)
-  return w !== undefined && w.owner !== owner
+  return w !== undefined && w.team !== team
 }
 
 const bulletBlocked = (s: MatchState, x: number, y: number) =>
   blocksBullets(tileAt(s.map, x, y)) || isCoreTile(s, x, y) || wallAt(s, x, y) !== undefined
 
 /** Devuelve la primera casilla sólida que toca el cuerpo (caja a la altura de los pies, ver BODY). */
-function overlapSolid(s: MatchState, x: number, y: number, r: number, owner?: Slot): Point | null {
+function overlapSolid(s: MatchState, x: number, y: number, r: number, owner?: Team): Point | null {
   for (let ty = Math.floor(y + BODY.top); ty <= Math.floor(y + BODY.bottom - 1e-6); ty++)
     for (let tx = Math.floor(x - r); tx <= Math.floor(x + r); tx++) if (isBlocked(s, tx, ty, owner)) return { x: tx, y: ty }
   return null
 }
 
 /** Mueve por ejes separados para deslizar contra paredes. Devuelve la casilla que bloqueó, si hubo. */
-function moveEntity(s: MatchState, e: { x: number; y: number }, dx: number, dy: number, r: number, owner?: Slot): Point | null {
+function moveEntity(s: MatchState, e: { x: number; y: number }, dx: number, dy: number, r: number, owner?: Team): Point | null {
   let hit: Point | null = null
   if (dx !== 0) {
     const h = overlapSolid(s, e.x + dx, e.y, r, owner)
@@ -640,6 +642,45 @@ function shoot(s: MatchState, p: Player) {
   }
 }
 
+/** Autoapuntado: desfase máximo al azar (radianes, ±8°) para que no sea perfecto. */
+export const AUTO_AIM_SPREAD = 0.14
+
+/** ¿Una bala de `team` llegaría de (x0, y0) a (x1, y1)? Las paredes del propio equipo no estorban. */
+function clearShot(s: MatchState, x0: number, y0: number, x1: number, y1: number, team: Team) {
+  const d = Math.hypot(x1 - x0, y1 - y0)
+  const n = Math.ceil(d / 0.25)
+  for (let i = 1; i < n; i++) {
+    const tx = Math.floor(x0 + ((x1 - x0) * i) / n)
+    const ty = Math.floor(y0 + ((y1 - y0) * i) / n)
+    const own = wallAt(s, tx, ty)
+    if (own && own.team === team && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
+    if (bulletBlocked(s, tx, ty)) return false
+  }
+  return true
+}
+
+/**
+ * Dirección hacia el objetivo más cercano a la vista y al alcance del arma (rival de otro equipo en combate, o zombi),
+ * con un pequeño desfase al azar. null si no hay ninguno: se dispara hacia donde mira.
+ */
+function autoAimAt(s: MatchState, p: Player): { x: number; y: number } | null {
+  let best: Point | null = null
+  let bestD = WEAPONS[p.weapon].range
+  const consider = (x: number, y: number) => {
+    const d = Math.hypot(x - p.x, y - p.y)
+    if (d < bestD && d > 1e-3 && clearShot(s, p.x, p.y, x, y, p.team)) {
+      best = { x, y }
+      bestD = d
+    }
+  }
+  if (isCombat(s)) for (const o of s.players) if (o.alive && o.team !== p.team) consider(o.x, o.y)
+  for (const z of s.zombies) if (z.hp > 0) consider(z.x, z.y)
+  if (!best) return null
+  const t: Point = best
+  const a = Math.atan2(t.y - p.y, t.x - p.x) + (s.rng.next() - 0.5) * 2 * AUTO_AIM_SPREAD
+  return { x: Math.cos(a), y: Math.sin(a) }
+}
+
 /** Zombi vivo más cercano dentro del alcance del cuchillo. */
 function zombieInKnifeRange(s: MatchState, p: Player): Zombie | null {
   let best: Zombie | null = null
@@ -718,6 +759,7 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
   let my = (input.down ? 1 : 0) - (input.up ? 1 : 0)
   // Aim (if valid) drives facing; movement keys then never change it.
   p.aim = sanitizeAim(input.aim)
+  if (input.fire && input.autoAim && p.fireCd <= 0) p.aim = autoAimAt(s, p) ?? p.aim
   if (p.aim) {
     const f = quantizeFacing(p.aim.x, p.aim.y)
     p.dirX = f.x
@@ -733,7 +775,7 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
     }
     // Velocidad máxima validada por el servidor: no depende de los FPS del cliente.
     const speed = PLAYER.speed * perksOf(p.survivor).speed
-    moveEntity(s, p, mx * speed * dt, my * speed * dt, PLAYER.radius, p.slot)
+    moveEntity(s, p, mx * speed * dt, my * speed * dt, PLAYER.radius, p.team)
   }
 
   p.fireCd = Math.max(0, p.fireCd - dt)

@@ -333,6 +333,7 @@ export class RoomService {
     room.inputs.clear();
     room.actionTaps.clear();
     room.fireTaps.clear();
+    room.autoAimTaps.clear();
     room.commands = [];
     room.startCombat(this.now());
     this.logger.log(`Sala ${room.code}: combate iniciado (seed ${room.seed})`);
@@ -354,6 +355,7 @@ export class RoomService {
     room.inputs.set(player.sessionId, input);
     if (input.action) room.actionTaps.add(player.sessionId);
     if (input.fire) room.fireTaps.add(player.sessionId);
+    if (input.fire && input.autoAim) room.autoAimTaps.add(player.sessionId);
   }
 
   /** Encola un comando discreto (barra rápida o caja) para el siguiente tick. */
@@ -391,10 +393,12 @@ export class RoomService {
       for (const p of room.players.values()) {
         const last = p.connected ? (room.inputs.get(p.sessionId) ?? IDLE) : IDLE;
         const tapped = room.actionTaps.has(p.sessionId) ? { ...last, action: true } : last;
-        inputs[p.sessionId] = room.fireTaps.has(p.sessionId) ? { ...tapped, fire: true } : tapped;
+        const fired = room.fireTaps.has(p.sessionId) ? { ...tapped, fire: true } : tapped;
+        inputs[p.sessionId] = room.autoAimTaps.has(p.sessionId) ? { ...fired, fire: true, autoAim: true } : fired;
       }
       room.actionTaps.clear();
       room.fireTaps.clear();
+      room.autoAimTaps.clear();
       step(match, inputs, room.commands.splice(0), TICK_DT);
       stepped++;
     }

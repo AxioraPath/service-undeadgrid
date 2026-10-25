@@ -632,3 +632,34 @@ describe('colisiones, explosivos y paredes propias', () => {
     expect(x0).toBeLessThan(tx);
   });
 });
+
+describe('autoapuntado (celular)', () => {
+  const idle = { up: false, down: false, left: false, right: false, action: false };
+  const setup = () => {
+    const s = createMatch({ seed: 11, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
+    const p = s.players[0];
+    Object.assign(p, { x: s.map.armory.x + 0.5, y: s.map.armory.y + 1.5, dirX: 1, dirY: 0 });
+    return { s, p };
+  };
+  const zombie = (s: ReturnType<typeof setup>['s'], x: number, y: number) => {
+    s.zombies.push({ id: s.nextId++, x, y, px: x, py: y, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, attackAt: -1, hurtAt: -1, target: null });
+  };
+
+  it('un toque dispara hacia el zombi más cercano aunque el jugador mire a otro lado, con un desfase pequeño', () => {
+    const { s, p } = setup();
+    zombie(s, p.x, p.y - 4); // arriba; el jugador mira a la derecha
+    zombie(s, p.x - 7, p.y); // más lejos
+    step(s, { a: { ...idle, fire: true, autoAim: true } }, [], 1 / 30);
+    expect(s.bullets.length).toBe(1);
+    const b = s.bullets[0];
+    const angle = Math.atan2(b.vy, b.vx);
+    expect(Math.abs(angle - -Math.PI / 2)).toBeLessThanOrEqual(0.14 + 1e-6);
+  });
+
+  it('sin objetivos a la vista dispara hacia donde mira', () => {
+    const { s } = setup();
+    step(s, { a: { ...idle, fire: true, autoAim: true } }, [], 1 / 30);
+    expect(s.bullets[0].vx).toBeGreaterThan(0);
+    expect(Math.abs(s.bullets[0].vy)).toBeLessThan(1e-9);
+  });
+});
