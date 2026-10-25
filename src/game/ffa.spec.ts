@@ -1,4 +1,4 @@
-import { FFA, MAP_W, ZOMBIE_TRAITS } from './constants';
+import { FFA, MAP_W, PHASES_FFA, ZOMBIE_TRAITS } from './constants';
 import { createMatch, eliminatePlayer, step, type MatchState } from './engine';
 import { encodeMap, encodeState } from './snapshot';
 import { isSolidTileKind, Ground } from './mapgen';
@@ -154,7 +154,7 @@ describe('forma de choque de los objetos (medida del dibujo)', () => {
 describe('duración de la preparación según el modo', () => {
   const one = [{ id: 'a', slot: 1 as const, name: 'A', survivor: 'base' }, { id: 'b', slot: 2 as const, name: 'B', survivor: 'base' }];
   const runTo = (s: MatchState, seconds: number) => {
-    while (s.time < seconds) step(s, {}, [], 1 / 30);
+    while (s.time < seconds && !s.result) step(s, {}, [], 1 / 30);
     return encodeState(s);
   };
 
@@ -166,10 +166,11 @@ describe('duración de la preparación según el modo', () => {
     expect(encodeState(s).duration).toBe(205);
   });
 
-  it('todos contra todos: solo 5 s de preparación', () => {
+  it('todos contra todos: solo 5 s de preparación y hasta 5 minutos de partida', () => {
     const s = createMatch({ seed: 5, players: one, ffa: true, lives: 3 });
     expect(encodeState(s).phase).toMatchObject({ id: 'prep', end: 5 });
     expect(runTo(s, 5.1).phase).toMatchObject({ id: 'wave1', start: 5, end: 65 });
-    expect(encodeState(s).duration).toBe(185);
+    expect(encodeState(s).duration).toBe(300);
+    expect(PHASES_FFA[3]).toMatchObject({ id: 'horde', start: 125, end: 300 });
   });
 });
