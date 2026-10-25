@@ -1,3 +1,4 @@
+import { matchOverDetails } from '../stats/match-stats.service';
 import { RoomService } from './room.service';
 
 /** Sala en modo todos contra todos: de 2 a 4 jugadores, vidas elegibles y abandono. */
@@ -67,5 +68,15 @@ describe('RoomService (todos contra todos)', () => {
     svc.tickCombat(room);
     expect(room.status).toBe('results');
     expect(room.result).toMatchObject({ winnerSlot: 1, reason: 'last_standing' });
+  });
+
+  it('las estadísticas finales solo traen a los que jugaron', () => {
+    const room = lobby(2);
+    svc.start(room.code, 's1');
+    svc.beginCombat(room);
+    Object.assign(room.match!.players.find((p) => p.slot === 2)!, { alive: false, lives: 0, respawnAt: null });
+    clock += 100;
+    svc.tickCombat(room);
+    expect(Object.keys(matchOverDetails(room).stats)).toEqual(['1', '2']);
   });
 });

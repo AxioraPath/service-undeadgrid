@@ -52,7 +52,10 @@ export function matchOverDetails(room: Room): Omit<MatchOverPayload, 'xp'> {
   const result = room.result;
   const { durationS, bySlot } = matchSummary(room);
   const stats: Record<number, MatchPlayerStats> = {};
+  // Todos contra todos: solo los lugares que jugaron (en 2 jugadores no salen 4 filas).
+  const played = room.mode === 'ffa' && room.match ? new Set(room.match.players.map((p) => p.slot)) : null;
   for (const slot of slotsOf(room.mode)) {
+    if (played && !played.has(slot)) continue;
     const team = teamOf(slot);
     const hp = result?.cores[team] ?? room.cores[team];
     stats[slot] = {
