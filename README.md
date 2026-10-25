@@ -2,13 +2,13 @@
 
 # 🧟 UndeadGrid · Backend
 
-**CyberGrid: Breach & Sync** — servidor autoritativo de partidas 1v1 y 2v2 en tiempo real.
+**CyberGrid: Breach & Sync** — servidor autoritativo de partidas 1v1, 2v2 y todos contra todos en tiempo real.
 
 ![NestJS](https://img.shields.io/badge/NestJS-10-e0234e?logo=nestjs&logoColor=white)
 ![Socket.IO](https://img.shields.io/badge/Socket.IO-4-010101?logo=socketdotio&logoColor=white)
 ![Prisma](https://img.shields.io/badge/Prisma-5-2d3748?logo=prisma&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169e1?logo=postgresql&logoColor=white)
-![Jest](https://img.shields.io/badge/tests-138%20Jest-c21325?logo=jest&logoColor=white)
+![Jest](https://img.shields.io/badge/tests-160%20Jest-c21325?logo=jest&logoColor=white)
 
 [Juego en vivo](https://undeadgrid.axiorapath.com.mx) · [API](https://api.undeadgrid.axiorapath.com.mx/health) · [Contrato de eventos](./EVENTS.md) · [Frontend](https://github.com/AxioraPath/undeadgrid-web-app)
 
@@ -18,7 +18,8 @@
 
 ## ¿Qué es?
 
-Juego web multijugador de supervivencia: construye tu base, resiste oleadas de zombis y destruye el núcleo rival.
+Juego web multijugador de supervivencia: construye tu base, resiste oleadas de zombis y destruye el núcleo rival
+(o, en todos contra todos, sé el último en pie).
 Este servicio es la **única fuente de verdad**: el cliente solo envía entradas (`game:input`, `game:command`) y dibuja lo
 que recibe en `game:state`. Modificar valores en el navegador no cambia nada en la partida.
 
@@ -26,7 +27,17 @@ que recibe en `game:state`. Modificar valores en el navegador no cambia nada en 
 
 - **Simulación server-authoritative** a 30 ticks/s: movimiento con colisiones, disparos, zombis, oleadas, construcción,
   trampas, torretas, armas pesadas, caja de suministros y reaparición.
-- **Modos 1v1 y 2v2.** En 2v2 cada equipo comparte base y núcleo, sin fuego amigo.
+- **Tres modos:**
+  - **1v1** y **2v2**: cada equipo defiende su núcleo; en 2v2 comparten base y núcleo, sin fuego amigo.
+  - **Todos contra todos** (2 a 4 jugadores): sin núcleos, 3 o 5 vidas (`lobby:setLives`), construcción en cualquier
+    parte, armas tiradas en el mapa (escopeta, subfusil, francotirador, lanzacohetes, botiquín) y gana el último en pie.
+- **Tres mapas generados por semilla:** Ciudad abandonada, Desierto ferroviario y Distrito industrial.
+- **Zombis con variantes** (normales, rápidos y tanques) y objetos destructibles; los barriles explotan si reciben daño.
+- **Colisiones con la forma real de cada objeto:** `objectShapes.ts` guarda, por casilla, el rectángulo medido del sprite,
+  así que jugadores y balas solo chocan donde el objeto se dibuja.
+- **Chat de texto en partida** (`chat:send` / `chat:message`), validado con Zod como el resto de eventos.
+- **Una sesión por cuenta y sala:** abrir el mismo enlace con la misma cuenta no duplica al jugador.
+- **Asistencia de apuntado** para móvil: el servidor corrige el disparo hacia el enemigo dentro de un cono de 15°.
 - **Salas por código** con máquina de estados `lobby → selection → preparation → combat → results`, reconexión,
   revancha y volver al lobby.
 - **Cuentas y progresión:** registro/login con JWT + cookie de refresco, XP, niveles y misiones diarias/permanentes.
@@ -45,7 +56,7 @@ Cliente (React + Canvas)  ──Socket.IO──►  RoomGateway ──► RoomSe
 
 | Carpeta | Contenido |
 |---|---|
-| `src/game` | Motor de simulación, generador de mapas, snapshots |
+| `src/game` | Motor de simulación, generador de mapas, formas de choque (`objectShapes.ts`), snapshots |
 | `src/room` | Gateway Socket.IO, salas, orquestador de fases |
 | `src/contracts` | Esquemas Zod y tipos compartidos con el cliente |
 | `src/auth`, `src/users` | Registro, login, sesión |
@@ -78,12 +89,12 @@ npm run start:dev           # http://localhost:3000
 ## Pruebas
 
 ```bash
-npm test        # 138 pruebas en 9 suites
+npm test        # 160 pruebas en 11 suites
 npm run build
 ```
 
-Cubren generación de mapas, motor (daño, escalado, colisiones, fuego amigo), salas 1v1/2v2, validación Zod,
-progresión y endpoints de prueba.
+Cubren generación de mapas, motor (daño, escalado, colisiones por forma, fuego amigo), salas 1v1/2v2/todos contra todos
+(vidas, eliminación, abandono, armas del suelo), validación Zod, progresión y endpoints de prueba.
 
 ## Endpoints
 
