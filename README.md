@@ -1,132 +1,109 @@
-# service-undeadgrid
+<div align="center">
 
-Servidor autoritativo de salas **1 vs 1** para Undead Grid, construido con
-**NestJS + TypeScript + Socket.IO**. Gestiona creación/unión de salas por código,
-selección de personaje, la máquina de estados de la partida y la limpieza de
-salas. Es el *backend* del frontend `undeadgrid-web-app`.
+# 🧟 UndeadGrid · Backend
 
-## Alcance
+**CyberGrid: Breach & Sync** — servidor autoritativo de partidas 1v1 y 2v2 en tiempo real.
 
-El servidor es autoritativo sobre:
+![NestJS](https://img.shields.io/badge/NestJS-10-e0234e?logo=nestjs&logoColor=white)
+![Socket.IO](https://img.shields.io/badge/Socket.IO-4-010101?logo=socketdotio&logoColor=white)
+![Prisma](https://img.shields.io/badge/Prisma-5-2d3748?logo=prisma&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169e1?logo=postgresql&logoColor=white)
+![Jest](https://img.shields.io/badge/tests-138%20Jest-c21325?logo=jest&logoColor=white)
 
-- **Salas y asientos:** crear/unir por código, capacidad 1v1, slots (1 = base
-  azul, 2 = base roja), sesiones y reconexión.
-- **Selección:** elección y confirmación de superviviente.
-- **Máquina de estados:** `lobby → selection → preparation → combat → results`.
-  **Solo el servidor** cambia de fase.
-- **Reloj de combate:** fases por tiempo (`prep/wave1/wave2/horde`) y fin por
-  tiempo o por destrucción de núcleo.
-- **Ciclo de vida:** desconexión, reconexión, abandono y limpieza de salas
-  vacías/huérfanas.
+[Juego en vivo](https://undeadgrid.axiorapath.com.mx) · [API](https://api.undeadgrid.axiorapath.com.mx/health) · [Contrato de eventos](./EVENTS.md) · [Frontend](https://github.com/AxioraPath/undeadgrid-web-app)
 
-- **Simulación de combate (src/game):** el servidor corre la partida completa a
-  30 ticks/s: movimiento con colisiones, disparos, zombis y oleadas, construcción,
-  trampas, caja de suministros, recompensas, reaparición y victoria. El mapa se
-  genera con la semilla de la sala. El cliente solo manda `game:input` /
-  `game:command` y dibuja lo que llega en `game:state`; editar valores en el
-  navegador no cambia nada en la partida.
+</div>
 
-> No hay base de datos ni autenticación: el juego es efímero y el estado vive en
-> memoria. No se añaden por no existir una necesidad actual.
+---
 
-## Requisitos
+## ¿Qué es?
 
-- Node.js ≥ 18 (probado con v24).
+Juego web multijugador de supervivencia: construye tu base, resiste oleadas de zombis y destruye el núcleo rival.
+Este servicio es la **única fuente de verdad**: el cliente solo envía entradas (`game:input`, `game:command`) y dibuja lo
+que recibe en `game:state`. Modificar valores en el navegador no cambia nada en la partida.
+
+## Características
+
+- **Simulación server-authoritative** a 30 ticks/s: movimiento con colisiones, disparos, zombis, oleadas, construcción,
+  trampas, torretas, armas pesadas, caja de suministros y reaparición.
+- **Modos 1v1 y 2v2.** En 2v2 cada equipo comparte base y núcleo, sin fuego amigo.
+- **Salas por código** con máquina de estados `lobby → selection → preparation → combat → results`, reconexión,
+  revancha y volver al lobby.
+- **Cuentas y progresión:** registro/login con JWT + cookie de refresco, XP, niveles y misiones diarias/permanentes.
+- **Historial y estadísticas** de partidas en PostgreSQL.
+- **Validación con Zod** en cada evento, *acks* tipados y *rate limiting* por socket.
+- **Endpoints de auditoría** para el curso: telemetría y generación de datos de prueba.
+
+## Arquitectura
+
+```
+Cliente (React + Canvas)  ──Socket.IO──►  RoomGateway ──► RoomService ──► GameEngine (30 Hz)
+        ▲                                      │                              │
+        └────────── game:state ◄───────────────┘                              ▼
+                                                                    MatchStatsService ──► PostgreSQL (Prisma)
+```
+
+| Carpeta | Contenido |
+|---|---|
+| `src/game` | Motor de simulación, generador de mapas, snapshots |
+| `src/room` | Gateway Socket.IO, salas, orquestador de fases |
+| `src/contracts` | Esquemas Zod y tipos compartidos con el cliente |
+| `src/auth`, `src/users` | Registro, login, sesión |
+| `src/progression`, `src/stats` | XP, misiones, historial |
+| `src/testing` | `GET /api/test/telemetry`, `POST /api/test/seed` |
+| `prisma/` | Esquema y migraciones |
 
 ## Puesta en marcha
 
+Requisitos: **Node.js 22**, **PostgreSQL 14+**.
+
 ```bash
-npm install
-cp .env.example .env     # ajusta CORS_ORIGINS si hace falta
-npm run start:dev        # desarrollo con recarga
-# o
-npm run build && npm run start:prod
+npm ci
+cp .env.example .env        # completa DATABASE_URL y los secretos JWT
+npx prisma migrate deploy
+npm run start:dev           # http://localhost:3000
 ```
 
-Por defecto escucha en `http://localhost:3000`. El dev server de Vite del
-frontend hace proxy de `/api`, `/health` y `/socket.io` a este puerto.
+### Variables de entorno
 
-## Variables de entorno
+| Variable | Descripción |
+|---|---|
+| `DATABASE_URL` | Cadena de conexión de PostgreSQL |
+| `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | Secretos de sesión. **Obligatorios en producción** |
+| `CORS_ORIGINS` | Orígenes permitidos, separados por coma |
+| `APP_WEB_URL` | URL pública del frontend |
+| `ENABLE_TEST_ENDPOINTS` | `true` habilita `/api/test/*` aun en producción |
+| `PORT`, `LOG_LEVELS` | Puerto y niveles de log |
 
-| Variable       | Por defecto           | Descripción                                             |
-|----------------|-----------------------|---------------------------------------------------------|
-| `PORT`         | `3000`                | Puerto HTTP/WebSocket.                                   |
-| `CORS_ORIGINS` | *(vacío = mismo origen)* | Orígenes permitidos, separados por comas.            |
-| `LOG_LEVELS`   | `log,error,warn`      | Niveles de log de Nest.                                 |
+## Pruebas
 
-## Scripts
-
-| Script              | Descripción                          |
-|---------------------|--------------------------------------|
-| `npm run build`     | Compila a `dist/`.                   |
-| `npm run start:dev` | Arranca en modo watch.               |
-| `npm run start:prod`| Ejecuta el build (`node dist/main.js`). |
-| `npm test`          | Tests (Jest).                        |
-| `npm run lint`      | Lint (ESLint).                       |
-
-## Endpoints y eventos
-
-- **HTTP:** `GET /health` → `{ status, uptime, rooms, at }`.
-- **Socket.IO:** ver el contrato completo en [`EVENTS.md`](./EVENTS.md).
-
-## Estructura
-
-```
-src/
-  main.ts                      Bootstrap (CORS, puerto, logs)
-  app.module.ts                Módulo raíz
-  config/
-    game.config.ts             Config PROVISIONAL centralizada (espeja el frontend)
-  contracts/                   Contratos tipados (fuente de verdad)
-    common.ts                  Estados, errores, Ack<T>
-    snapshots.ts               RoomSnapshot, PlayerSnapshot, CombatSnapshot...
-    payloads.ts                Esquemas Zod de validación de entrada
-    events.ts                  Mapas de eventos Socket.IO cliente↔servidor
-  domain/
-    player.ts                  Entidad Player
-    room.ts                    Entidad Room + máquina de estados + reloj
-  game/                        Reglas y simulación de la partida (TS puro, sin Nest)
-    constants.ts               Valores de la sección 5 (vidas, daños, costos, fases)
-    formulas.ts                Escalado por oleada, daño, curación, interpolación
-    mapgen.ts                  Mapa 32×24 por semilla + validación BFS
-    engine.ts                  Tick de la partida (inputs → mundo → victoria)
-    snapshot.ts                Mapa y estado que viajan al cliente
-    game.spec.ts               Pruebas unitarias de las reglas
-  room/
-    room.service.ts            Lógica de negocio autoritativa
-    room.gateway.ts            Gateway Socket.IO (validación, acks, rate limit)
-    phase-orchestrator.service.ts  Bucle de 30 ticks/s (game:state), reloj 1 Hz y barrido
-    room.module.ts
-    room.service.spec.ts       Test de humo del flujo 1v1
-  common/
-    domain-error.ts            Error de dominio → ApiError
-    ids.ts                     Códigos de sala, sessionId, seed
-    rate-limiter.service.ts    Rate limiting por (socket, evento)
-  health/
-    health.controller.ts       GET /health
+```bash
+npm test        # 138 pruebas en 9 suites
+npm run build
 ```
 
-## Diseño
+Cubren generación de mapas, motor (daño, escalado, colisiones, fuego amigo), salas 1v1/2v2, validación Zod,
+progresión y endpoints de prueba.
 
-- **Autoritativo:** el cliente propone, el servidor dispone. Toda transición de
-  estado y todo cambio de núcleo pasa por `RoomService`.
-- **Contratos tipados de punta a punta:** los tipos de `contracts/` describen
-  exactamente lo que viaja por el socket; Zod los valida en runtime.
-- **Acks uniformes:** todo handler responde `Ack<T>`; los errores nunca filtran
-  stack traces (se normalizan a `ApiError` con un código estable).
-- **Sin estado compartido externo:** todo en memoria y en un solo nodo. Para
-  escalar a varios nodos habría que mover salas y rate limiting a un store
-  compartido (p. ej. Redis + adaptador de Socket.IO).
+## Endpoints
 
-## Valores provisionales
+| Método | Ruta | Descripción |
+|---|---|---|
+| `GET` | `/health` | Estado del servicio |
+| `GET` | `/api/test/telemetry` | Win rate, KDR y supervivencia agregados |
+| `POST` | `/api/test/seed` | Inserta de 100 a 1000 partidas sintéticas `{ "matches": 100 }` |
+| `DELETE` | `/api/test/seed` | Borra las partidas sintéticas |
+| `POST` | `/api/auth/register` · `/login` · `/refresh` · `/logout` | Sesión |
+| `GET` | `/api/me` · `/api/me/missions` | Perfil, XP y misiones |
 
-Todos los números de balance/flujo (fases, duración, vida de núcleo, límites,
-TTLs, rate limits) están **centralizados y comentados** en
-`src/config/game.config.ts`, espejando `undeadgrid-web-app/src/game/constants.ts`
-y `.../Lobby/data/catalog.ts`. No se inventan reglas de balance aquí: cuando el
-equipo las defina, se actualizan en ambos lados.
+El protocolo de Socket.IO completo está en [`EVENTS.md`](./EVENTS.md).
 
-## Pendiente / próximos pasos
+## CI/CD
 
-- Store compartido (Redis) y adaptador de Socket.IO para escalado multi-nodo.
-- Persistencia opcional de estadísticas (requiere introducir una base de datos).
+- **CI:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) corre `prisma generate`, `build` y `test` en cada PR y push a `main`.
+- **Despliegue:** Docker en un VPS con [Dokploy](https://dokploy.com), con HTTPS de Let's Encrypt. Cada push a `main` despliega
+  automáticamente y `docker-entrypoint.sh` aplica las migraciones al arrancar.
+
+## Equipo
+
+Josseph Peralta · Sylvanna Cisneros · Angel Anaya
