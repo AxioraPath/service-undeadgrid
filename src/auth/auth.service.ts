@@ -37,12 +37,20 @@ export class AuthService {
     private readonly config: ConfigService,
   ) {}
 
+  /** The dev fallbacks are public (the repo is), so production must never fall back to them. */
+  private secret(name: 'JWT_ACCESS_SECRET' | 'JWT_REFRESH_SECRET', devFallback: string): string {
+    const value = this.config.get<string>(name);
+    if (value) return value;
+    if (process.env.NODE_ENV === 'production') throw new Error(`${name} must be set in production`);
+    return devFallback;
+  }
+
   private accessSecret(): string {
-    return this.config.get<string>('JWT_ACCESS_SECRET') ?? 'dev-access-secret-change-me';
+    return this.secret('JWT_ACCESS_SECRET', 'dev-access-secret-change-me');
   }
 
   private refreshSecret(): string {
-    return this.config.get<string>('JWT_REFRESH_SECRET') ?? 'dev-refresh-secret-change-me';
+    return this.secret('JWT_REFRESH_SECRET', 'dev-refresh-secret-change-me');
   }
 
   private toPublic(u: { id: string; email: string; displayName: string }): PublicUser {
