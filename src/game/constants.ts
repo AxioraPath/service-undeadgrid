@@ -32,8 +32,8 @@ export interface PhaseDef {
 export const PREP_SECONDS = { vs: 25, ffa: 5 } as const
 const WAVE_SECONDS = 60
 
-/** Todos contra todos dura hasta que quede uno, con un tope de 5 minutos (la horda final se alarga hasta ahí). */
-export const FFA_MAX_SECONDS = 300
+/** Las partidas duran hasta que gane alguien, con un tope de 5 minutos (la horda final se alarga hasta ahí). */
+export const MAX_MATCH_SECONDS = 300
 
 function buildPhases(prep: number, total?: number): PhaseDef[] {
   const w = (n: number) => (n === 3 && total ? total : prep + WAVE_SECONDS * n)
@@ -46,9 +46,9 @@ function buildPhases(prep: number, total?: number): PhaseDef[] {
 }
 
 /** Fases de 1v1/2v2. */
-export const PHASES: PhaseDef[] = buildPhases(PREP_SECONDS.vs)
+export const PHASES: PhaseDef[] = buildPhases(PREP_SECONDS.vs, MAX_MATCH_SECONDS)
 /** Fases de todos contra todos. */
-export const PHASES_FFA: PhaseDef[] = buildPhases(PREP_SECONDS.ffa, FFA_MAX_SECONDS)
+export const PHASES_FFA: PhaseDef[] = buildPhases(PREP_SECONDS.ffa, MAX_MATCH_SECONDS)
 
 export const phasesFor = (ffa = false) => (ffa ? PHASES_FFA : PHASES)
 export const matchDurationFor = (ffa = false) => phasesFor(ffa)[phasesFor(ffa).length - 1].end

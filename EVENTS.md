@@ -41,7 +41,7 @@ Toda sala tiene `mode: '1v1' | '2v2'` (por defecto `'1v1'`) y `capacity` (2 o 4)
   sus estructuras, y las paredes propias/del compañero no frenan las balas del equipo. Los zombis atacan a ambos equipos.
   Cada estructura conserva `owner` (slot que la construyó, para estadísticas) y pertenece al equipo `teamOf(owner)`.
 - **Victoria.** Un equipo pierde cuando su núcleo compartido está destruido **y** ninguno de sus jugadores puede
-  reaparecer (si el núcleo cae, los que mueren ya no reaparecen). Por tiempo (205 s; en todos contra todos, tope de 300 s): gana el núcleo con más vida;
+  reaparecer (si el núcleo cae, los que mueren ya no reaparecen). Por tiempo (300 s, en todos los modos): gana el núcleo con más vida;
   si empatan, el equipo con más `kills + zombieKills` sumados; si no, empate.
 - **Abandono en 2v2.** Si se va un jugador y su compañero sigue en la sala, la partida **continúa** (su personaje
   queda inmóvil). Solo cuando se va **todo** su equipo gana el rival con `reason: 'opponent_left'`.
