@@ -5,6 +5,7 @@ import { phaseOf, playerInOwnBase, playerOnOwnCrate, previewBuild, type MatchSta
 const ZOMBIE_KIND = { normal: 0, fast: 1, tank: 2 } as const;
 const STRUCTURE_TYPE = { wood: 0, reinforced: 1, trap: 2, turret: 3 } as const;
 const PROJECTILE = { bullet: 0, sniper: 1, rocket: 2 } as const;
+const PICKUP_KIND = { shotgun: 0, medkit: 1, smg: 2, sniper: 3, rocket: 4 } as const;
 
 /** Redondea a milésimas para que el JSON viaje más ligero. */
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -14,6 +15,7 @@ export function encodeMap(s: MatchState): GameMapDto {
   return {
     seed: m.seed,
     theme: m.theme,
+    ffa: s.ffa,
     w: m.w,
     h: m.h,
     tiles: Array.from(m.tiles),
@@ -59,6 +61,7 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
         metal: p.metal,
         medkits: p.medkits,
         shells: p.shells,
+        lives: p.lives,
         heavy: p.heavy,
         heavyAmmo: p.heavyAmmo,
         turrets: p.turrets,
@@ -87,6 +90,7 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
         s.players.filter((p) => s.armory.progress[p.id] !== undefined).map((p) => [p.slot, r3(s.armory.progress[p.id])]),
       ),
     },
+    pickups: s.pickups.map((it): [number, number, number, number] => [it.id, r3(it.x), r3(it.y), PICKUP_KIND[it.kind]]),
     props: {
       destroyed: [...s.destroyedProps],
       damaged: [...s.props].filter(([, p]) => p.hp < p.maxHp).map(([i, p]) => [i, p.hp, p.maxHp]),

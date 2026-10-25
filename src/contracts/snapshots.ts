@@ -57,6 +57,8 @@ export interface RoomSnapshot {
   difficulty: string;
   /** Game mode chosen by the host in the lobby. */
   mode: GameMode;
+  /** Todos contra todos: vidas por jugador. */
+  lives: number;
   /** Max players for the mode (2 or 4). */
   capacity: number;
   /** Slot del host (quien puede iniciar y editar ajustes). */

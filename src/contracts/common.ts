@@ -38,7 +38,9 @@ export interface MatchResult {
    * In 1v1 the team number equals the winner's slot.
    */
   winner: Team | null;
-  reason: 'core_destroyed' | 'opponent_left' | 'time_out';
+  /** Todos contra todos: slot ganador (null = empate). En 1v1/2v2 no existe. */
+  winnerSlot?: Slot | null;
+  reason: 'core_destroyed' | 'opponent_left' | 'time_out' | 'last_standing';
   /** Final HP of each team's shared core (keyed by team; in 1v1 team == slot). */
   cores: Record<Team, number>;
 }
@@ -105,6 +107,8 @@ export interface MatchOverPayload {
   durationS: number;
   /** Winning TEAM (1v1: same number as the winning slot) or null for a draw. */
   winner: Team | null;
+  /** Todos contra todos: slot ganador (null = empate). */
+  winnerSlot?: Slot | null;
   reason: MatchResult['reason'];
   /** Spanish display name of the map. */
   mapName: string;

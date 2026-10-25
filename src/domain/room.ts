@@ -1,3 +1,4 @@
+import { FFA } from '../game/constants';
 import {
   CORE_HP,
   DEFAULT_MODE,
@@ -5,6 +6,7 @@ import {
   MAP_IDS,
   MATCH_DURATION,
   MODE_CAPACITY,
+  MODE_MIN_PLAYERS,
   PHASES,
   SLOTS,
   TEAM_SIZE,
@@ -56,6 +58,8 @@ export class Room {
   mapId: string = MAP_IDS[0];
   difficulty: string = DIFFICULTIES[0];
   mode: GameMode = DEFAULT_MODE;
+  /** Todos contra todos: vidas por jugador (3 o 5, lo elige el anfitrión). */
+  lives: number = FFA.defaultLives;
   hostSlot: Slot = SLOTS[0];
 
   readonly players = new Map<Slot, Player>();
@@ -133,8 +137,8 @@ export class Room {
    * (ties -> team 1) in its first free seat, so teams stay balanced (join order 1, 2, 3, 4).
    */
   freeSlot(): Slot | null {
-    if (this.mode === '1v1') {
-      for (const s of slotsOf('1v1')) if (!this.players.has(s)) return s;
+    if (this.mode === '1v1' || this.mode === 'ffa') {
+      for (const s of slotsOf(this.mode)) if (!this.players.has(s)) return s;
       return null;
     }
     const byLoad = [...TEAMS].sort((a, b) => this.playersOfTeam(a).length - this.playersOfTeam(b).length || a - b);
@@ -170,7 +174,7 @@ export class Room {
    */
   applyMode(mode: GameMode): void {
     this.mode = mode;
-    if (mode === '1v1') {
+    if (mode === '1v1' || mode === 'ffa') {
       const ordered = [...this.players.values()].sort((a, b) => a.slot - b.slot);
       this.players.clear();
       ordered.forEach((p, i) => {
@@ -244,13 +248,14 @@ export class Room {
 
   /** 2v2: exactly TEAM_SIZE players on each team. 1v1: always true (one per slot). */
   teamsBalanced(): boolean {
-    if (this.mode === '1v1') return true;
+    if (this.mode !== '2v2') return true;
     return TEAMS.every((t) => this.playersOfTeam(t).length === TEAM_SIZE);
   }
 
   /** ¿Todos los asientos ocupados, conectados y listos? (condición de arranque). */
   allReady(): boolean {
-    if (this.players.size !== this.capacity) return false;
+    // Todos contra todos: basta con 2 o más jugadores; los demás modos necesitan la sala llena.
+    if (this.mode === 'ffa' ? this.players.size < MODE_MIN_PLAYERS.ffa : this.players.size !== this.capacity) return false;
     for (const p of this.players.values()) {
       if (!p.connected || !p.ready) return false;
     }
@@ -359,6 +364,7 @@ export class Room {
       mapId: this.mapId,
       difficulty: this.difficulty,
       mode: this.mode,
+      lives: this.lives,
       capacity: this.capacity,
       hostSlot: this.hostSlot,
       players,

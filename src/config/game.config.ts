@@ -17,13 +17,15 @@ export const ROOM_CODE = {
   alphabet: 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789',
 } as const;
 
-/** Game modes. Rooms are created as '1v1' and the host can switch in the lobby. */
-export const GAME_MODES = ['1v1', '2v2'] as const;
+/** Game modes. Rooms are created as '1v1' and the host can switch in the lobby ('ffa' = todos contra todos). */
+export const GAME_MODES = ['1v1', '2v2', 'ffa'] as const;
 export type GameMode = (typeof GAME_MODES)[number];
 export const DEFAULT_MODE: GameMode = '1v1';
 
 /** Room capacity per mode (1v1: 2 players, 2v2: 4 players). */
-export const MODE_CAPACITY: Record<GameMode, number> = { '1v1': 2, '2v2': 4 };
+export const MODE_CAPACITY: Record<GameMode, number> = { '1v1': 2, '2v2': 4, ffa: 4 };
+/** Jugadores mínimos para empezar: 1v1 y 2v2 llenos; todos contra todos de 2 a 4. */
+export const MODE_MIN_PLAYERS: Record<GameMode, number> = { '1v1': 2, '2v2': 4, ffa: 2 };
 /** Players per team in 2v2. */
 export const TEAM_SIZE = 2;
 /** 1v1 capacity (kept for compatibility). */

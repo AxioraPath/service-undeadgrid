@@ -14,6 +14,9 @@ import {
   TURRET,
   CORE_HP,
   EXPLOSIVES,
+  FFA,
+  PICKUPS,
+  ZOMBIE_TRAITS,
   CRATE_REFILL,
   CRATE_START,
   MATCH_DURATION,
@@ -25,6 +28,7 @@ import {
   ZOMBIE,
   type BuildId,
   type ExplosiveKind,
+  type PickupKind,
   type HeavyId,
   type ProjectileKind,
   type Slot,
@@ -34,7 +38,7 @@ import {
   teamOf,
 } from './constants'
 import { applyDamage, heal, zombieCount, zombieDamage, zombieHp } from './formulas'
-import { BUILDINGS, blocksBullets, generateMap, inRect, mapThemeOf, isSolidTileKind, tileAt, tileIndex, Tile, type GameMapData, type Point } from './mapgen'
+import { BUILDINGS, Ground, blocksBullets, generateMap, inRect, mapThemeOf, isSolidTileKind, tileAt, tileIndex, Tile, type GameMapData, type Point } from './mapgen'
 import { createRng, type Rng } from './rng'
 
 // ---------------------------------------------------------------------------
@@ -71,6 +75,13 @@ export interface Player {
   slot: Slot
   /** Team of the slot (1v1: same number as the slot). */
   team: Team
+  /**
+   * Bando para decidir quién es enemigo: el equipo en 1v1/2v2; en todos contra todos, cada jugador es su
+   * propio bando (su slot). Toda regla de aliado/enemigo usa `side`, no `team`.
+   */
+  side: number
+  /** Todos contra todos: vidas que le quedan (null en los otros modos: reaparece mientras viva su núcleo). */
+  lives: number | null
   name: string
   survivor: string
   x: number
@@ -128,8 +139,10 @@ export interface Zombie {
   attackCd: number
   retargetAt: number
   trapAcc: number
-  /** Solo visual: el sprite depende de la oleada. */
+  /** Tipo: cambia el sprite y sus rasgos (vida, velocidad y daño, ver ZOMBIE_TRAITS). */
   kind: ZombieKind
+  /** Multiplicador de velocidad del tipo. */
+  speedMul: number
   attackAt: number
   hurtAt: number
   target: { kind: 'player'; id: string } | { kind: 'core'; team: Team } | null
@@ -140,6 +153,8 @@ export interface Bullet {
   owner: string
   ownerSlot: Slot
   ownerTeam: Team
+  /** Bando de quien disparó (ver Player.side). */
+  ownerSide: number
   x: number
   y: number
   px: number
@@ -168,6 +183,8 @@ export interface Structure {
   owner: Slot
   /** Team it belongs to (collision, targeting, friendly fire). */
   team: Team
+  /** Bando del que la construyó (ver Player.side): sus balas y él la atraviesan. */
+  side: number
   /** Wall orientation chosen at build time (traps use 'h' and ignore it). */
   orient: WallOrient
   /** Solo torretas: tiros en el cargador, enfriamiento, fin de la recarga y hacia dónde apunta. */
@@ -178,6 +195,15 @@ export interface Structure {
   aimY?: number
   /** Solo visual: último disparo de la torreta. */
   shotAt?: number
+}
+
+/** Arma o botiquín tirado en el mapa (todos contra todos). */
+export interface Pickup {
+  id: number
+  x: number
+  y: number
+  kind: PickupKind
+  ammo: number
 }
 
 /** Barril o tanque de combustible del mapa: casillas que ocupa, centro y vida. */
@@ -209,6 +235,8 @@ export type GameEvent =
   | { type: 'shot'; x: number; y: number; dirX: number; dirY: number; slot: Slot }
   | { type: 'explosion'; x: number; y: number; big?: boolean }
   | { type: 'propDestroyed'; index: number }
+  | { type: 'pickup'; slot: Slot; kind: PickupKind; x: number; y: number }
+  | { type: 'eliminated'; slot: Slot }
   | { type: 'knife'; slot: Slot; x: number; y: number }
   | { type: 'hit'; x: number; y: number }
   | { type: 'zombieDied'; x: number; y: number; kind: ZombieKind }
@@ -223,6 +251,8 @@ export type GameEvent =
 
 export interface MatchResult {
   winner: Team | 0 // winning TEAM (1v1: same as the slot); 0 = draw
+  /** Todos contra todos: slot ganador (null = empate). En los otros modos no existe. */
+  winnerSlot?: Slot | null
   reason: string
   durationS: number
   /** true si terminó por tiempo; false si fue por núcleo destruido + enemigo eliminado. */
@@ -260,6 +290,13 @@ export interface MatchState {
   ticks: number
   result: MatchResult | null
   events: GameEvent[]
+  /** Todos contra todos: sin núcleos/bases, vidas, construcción libre y armas en el suelo. */
+  ffa: boolean
+  /** Puntos de aparición (una esquina por jugador) en todos contra todos. */
+  ffaSpawns: Point[]
+  /** Armas y botiquines en el suelo (todos contra todos). */
+  pickups: Pickup[]
+  nextPickupAt: number
 }
 
 export interface CreateMatchOptions {
@@ -269,6 +306,9 @@ export interface CreateMatchOptions {
   difficulty?: string
   /** Mapa elegido en la sala (define el tema del generador). */
   mapId?: string
+  /** Todos contra todos y sus vidas por jugador. */
+  ffa?: boolean
+  lives?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -305,19 +345,48 @@ function spawnPoint(map: GameMapData, slot: Slot): Point {
   return { x: c.x + (second ? 0.5 : 1.5), y: c.y - 0.5 }
 }
 
-export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOptions): MatchState {
+/** Casilla caminable más cercana a un punto (búsqueda en anillos), para no aparecer dentro de un obstáculo. */
+function nearestWalkable(map: GameMapData, p: Point): Point {
+  for (let r = 0; r < 12; r++)
+    for (let dy = -r; dy <= r; dy++)
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue
+        const x = Math.floor(p.x) + dx
+        const y = Math.floor(p.y) + dy
+        if (x < 1 || y < 1 || x >= map.w - 1 || y >= map.h - 1) continue
+        if (!isSolidTileKind(map.tiles[tileIndex(x, y)])) return { x: x + 0.5, y: y + 0.5 }
+      }
+  return p
+}
+
+/** Todos contra todos: una esquina por jugador (las dos bases y las dos esquinas libres, en espejo). */
+function ffaSpawnPoints(map: GameMapData): Point[] {
+  const b1 = map.bases[1]
+  const b2 = map.bases[2]
+  const c1 = { x: b1.x + b1.w / 2, y: b1.y + b1.h / 2 }
+  const c2 = { x: b2.x + b2.w / 2, y: b2.y + b2.h / 2 }
+  const c3 = { x: c2.x, y: c1.y }
+  const c4 = { x: c1.x, y: c2.y }
+  return [c1, c2, c3, c4].map((p) => nearestWalkable(map, p))
+}
+
+export function createMatch({ seed, players, difficulty, mapId, ffa = false, lives = FFA.defaultLives }: CreateMatchOptions): MatchState {
   const map = generateMap(seed, mapThemeOf(mapId))
+  const ffaSpawns = ffa ? ffaSpawnPoints(map) : []
+  const start = ffa ? FFA.start : PLAYER_START
   return {
     map,
     rng: createRng(seed ^ 0x9e3779b9),
     time: 0,
     phaseIndex: 0,
     players: players.map((p) => {
-      const sp = spawnPoint(map, p.slot)
+      const sp = ffa ? ffaSpawns[p.slot - 1] : spawnPoint(map, p.slot)
       const extra = perksOf(p.survivor).start
       return {
         ...p,
         team: teamOf(p.slot),
+        side: ffa ? p.slot : teamOf(p.slot),
+        lives: ffa ? lives : null,
         x: sp.x,
         y: sp.y,
         px: sp.x,
@@ -330,10 +399,10 @@ export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOpt
         respawnAt: null,
         weapon: 'pistol',
         build: 'wall',
-        wood: PLAYER_START.wood + (extra.wood ?? 0),
-        metal: PLAYER_START.metal + (extra.metal ?? 0),
-        medkits: PLAYER_START.medkits + (extra.medkits ?? 0),
-        shells: PLAYER_START.shells + (extra.shells ?? 0),
+        wood: start.wood + (extra.wood ?? 0),
+        metal: start.metal + (extra.metal ?? 0),
+        medkits: start.medkits + (extra.medkits ?? 0),
+        shells: start.shells + (extra.shells ?? 0),
         heavy: null,
         heavyAmmo: 0,
         knife: null,
@@ -355,9 +424,10 @@ export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOpt
     zombies: [],
     bullets: [],
     structures: new Map(),
-    cores: { 1: { team: 1, hp: CORE_HP }, 2: { team: 2, hp: CORE_HP } },
+    // Todos contra todos no tiene núcleos (vida 0: no estorban, no se atacan, no se dibujan).
+    cores: { 1: { team: 1, hp: ffa ? 0 : CORE_HP }, 2: { team: 2, hp: ffa ? 0 : CORE_HP } },
     coreDamageDealt: Object.fromEntries(players.map((p) => [p.slot, 0])),
-    crates: { 1: { ...CRATE_START }, 2: { ...CRATE_START } },
+    crates: ffa ? { 1: { wood: 0, metal: 0, medkits: 0, shells: 0 }, 2: { wood: 0, metal: 0, medkits: 0, shells: 0 } } : { 1: { ...CRATE_START }, 2: { ...CRATE_START } },
     ...explosivesOf(map),
     difficulty: { ...difficultyOf(difficulty) },
     armory: { x: map.armory.x, y: map.armory.y, available: false, progress: {}, openedBy: null },
@@ -368,6 +438,10 @@ export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOpt
     ticks: 0,
     result: null,
     events: [],
+    ffa,
+    ffaSpawns,
+    pickups: [],
+    nextPickupAt: 0,
   }
 }
 
@@ -386,25 +460,25 @@ const wallAt = (s: MatchState, x: number, y: number) => {
   return st && st.type !== 'trap' ? st : undefined
 }
 
-/** `team`: el jugador que se mueve atraviesa las paredes y torretas de su equipo (así nunca queda encerrado). */
-export const isBlocked = (s: MatchState, x: number, y: number, team?: Team) => {
+/** `side`: el jugador que se mueve atraviesa las paredes y torretas de su bando (así nunca queda encerrado). */
+export const isBlocked = (s: MatchState, x: number, y: number, side?: number) => {
   if (isSolidTileKind(tileAt(s.map, x, y)) || isCoreTile(s, x, y)) return true
   const w = wallAt(s, x, y)
-  return w !== undefined && w.team !== team
+  return w !== undefined && w.side !== side
 }
 
 const bulletBlocked = (s: MatchState, x: number, y: number) =>
   blocksBullets(tileAt(s.map, x, y)) || isCoreTile(s, x, y) || wallAt(s, x, y) !== undefined
 
 /** Devuelve la primera casilla sólida que toca el cuerpo (caja a la altura de los pies, ver BODY). */
-function overlapSolid(s: MatchState, x: number, y: number, r: number, owner?: Team): Point | null {
+function overlapSolid(s: MatchState, x: number, y: number, r: number, owner?: number): Point | null {
   for (let ty = Math.floor(y + BODY.top); ty <= Math.floor(y + BODY.bottom - 1e-6); ty++)
     for (let tx = Math.floor(x - r); tx <= Math.floor(x + r); tx++) if (isBlocked(s, tx, ty, owner)) return { x: tx, y: ty }
   return null
 }
 
 /** Mueve por ejes separados para deslizar contra paredes. Devuelve la casilla que bloqueó, si hubo. */
-function moveEntity(s: MatchState, e: { x: number; y: number }, dx: number, dy: number, r: number, owner?: Team): Point | null {
+function moveEntity(s: MatchState, e: { x: number; y: number }, dx: number, dy: number, r: number, owner?: number): Point | null {
   let hit: Point | null = null
   if (dx !== 0) {
     const h = overlapSolid(s, e.x + dx, e.y, r, owner)
@@ -436,9 +510,10 @@ function freeFraction(blocked: (f: number) => boolean): number {
   return lo
 }
 
-export const playerInOwnBase = (s: MatchState, p: Player) => inRect(s.map.bases[p.team], Math.floor(p.x), Math.floor(p.y))
+export const playerInOwnBase = (s: MatchState, p: Player) => !s.ffa && inRect(s.map.bases[p.team], Math.floor(p.x), Math.floor(p.y))
 
 export const playerOnOwnCrate = (s: MatchState, p: Player) => {
+  if (s.ffa) return false
   const c = s.map.crates[p.team]
   return p.alive && Math.floor(p.x) === c.x && Math.floor(p.y) === c.y
 }
@@ -478,15 +553,31 @@ function wallOrientAt(s: MatchState, p: Player, x: number, y: number): WallOrien
   return wallOrientFor(p)
 }
 
+/** 1v1/2v2: dentro de la base propia, fuera del núcleo y de la caja. */
+function inBaseBuildable(s: MatchState, p: Player, x: number, y: number) {
+  const crate = s.map.crates[p.team]
+  return inRect(s.map.bases[p.team], x, y) && !isCoreTile(s, x, y) && !(crate.x === x && crate.y === y)
+}
+
+/**
+ * Todos contra todos: cualquier casilla de piso del mapa, menos la plazoleta del centro (caja de armamento)
+ * y cerca de donde aparecen jugadores o zombis.
+ */
+function ffaBuildable(s: MatchState, x: number, y: number) {
+  if (x < 1 || y < 1 || x >= s.map.w - 1 || y >= s.map.h - 1) return false
+  const i = tileIndex(x, y)
+  if (isSolidTileKind(s.map.tiles[i]) || s.map.ground[i] === Ground.PLAZA) return false
+  const near = (p: Point) => Math.hypot(p.x - (x + 0.5), p.y - (y + 0.5)) < FFA.noBuildRadius + 0.5
+  return !s.ffaSpawns.some(near) && !s.map.spawns.some((p) => near({ x: p.x + 0.5, y: p.y + 0.5 }))
+}
+
 /** Qué pasaría al construir en la casilla (x, y): reparar, reforzar o colocar lo seleccionado. */
 export function previewBuildAt(s: MatchState, p: Player, x: number, y: number, newOrient: WallOrient): BuildPreview {
   const existing = s.structures.get(tileIndex(x, y))
   // Upgrading/repairing keeps the existing wall's orientation; new walls use the given one.
   const orient: WallOrient = existing && existing.type !== 'trap' ? existing.orient : newOrient
   const need = (has: boolean, label: string): BuildPreview => ({ x, y, ok: has, lacks: !has, label, orient })
-  const base = s.map.bases[p.team]
-  const crate = s.map.crates[p.team]
-  if (!inRect(base, x, y) || isCoreTile(s, x, y) || (crate.x === x && crate.y === y))
+  if (s.ffa ? !ffaBuildable(s, x, y) : !inBaseBuildable(s, p, x, y))
     return { x, y, ok: false, lacks: false, label: 'No se puede construir aquí', orient }
 
   const st = s.structures.get(tileIndex(x, y))
@@ -579,15 +670,15 @@ function applyBuild(s: MatchState, p: Player, pv: BuildPreview) {
     st.maxHp = maxHp
   } else if (p.build === 'turret') {
     p.turrets--
-    s.structures.set(key, { type: 'turret', hp: TURRET.hp, maxHp: TURRET.hp, owner: p.slot, team: p.team, orient: 'h', ammo: TURRET.magazine, cd: 0, reloadUntil: 0, aimX: 0, aimY: 1 })
+    s.structures.set(key, { type: 'turret', hp: TURRET.hp, maxHp: TURRET.hp, owner: p.slot, team: p.team, side: p.side, orient: 'h', ammo: TURRET.magazine, cd: 0, reloadUntil: 0, aimX: 0, aimY: 1 })
     if (p.turrets <= 0) p.build = 'wall'
   } else if (p.build === 'wall') {
     p.wood -= STRUCTURES.woodWall.wood
     const hp = Math.round(STRUCTURES.woodWall.hp * perksOf(p.survivor).wallHp)
-    s.structures.set(key, { type: 'wood', hp, maxHp: hp, owner: p.slot, team: p.team, orient: pv.orient })
+    s.structures.set(key, { type: 'wood', hp, maxHp: hp, owner: p.slot, team: p.team, side: p.side, orient: pv.orient })
   } else {
     p.metal -= STRUCTURES.trap.metal
-    s.structures.set(key, { type: 'trap', hp: 1, maxHp: 1, owner: p.slot, team: p.team, orient: 'h' })
+    s.structures.set(key, { type: 'trap', hp: 1, maxHp: 1, owner: p.slot, team: p.team, side: p.side, orient: 'h' })
   }
   if (!repaired) p.structuresBuilt++
   s.events.push({ type: 'built', x: pv.x, y: pv.y, what: pv.label })
@@ -648,7 +739,7 @@ function shoot(s: MatchState, p: Player) {
     const x = p.x + Math.cos(a) * 0.45
     const y = p.y + Math.sin(a) * 0.45
     s.bullets.push({
-      id: s.nextId++, owner: p.id, ownerSlot: p.slot, ownerTeam: p.team, x, y, px: x, py: y, vx, vy,
+      id: s.nextId++, owner: p.id, ownerSlot: p.slot, ownerTeam: p.team, ownerSide: p.side, x, y, px: x, py: y, vx, vy,
       damage: w.damage * dmg, traveled: 0, kind: w.projectile, speed: w.speed, range: w.range,
       pierce: w.pierce, hits: [], splash: w.projectile === 'rocket' ? ROCKET.damage * dmg : 0,
     })
@@ -667,14 +758,14 @@ export const AUTO_AIM_SPREAD = 0.14
 export const AIM_ASSIST_CONE = 0.26
 
 /** ¿Una bala de `team` llegaría de (x0, y0) a (x1, y1)? Las paredes del propio equipo no estorban. */
-function clearShot(s: MatchState, x0: number, y0: number, x1: number, y1: number, team: Team) {
+function clearShot(s: MatchState, x0: number, y0: number, x1: number, y1: number, side: number) {
   const d = Math.hypot(x1 - x0, y1 - y0)
   const n = Math.ceil(d / 0.25)
   for (let i = 1; i < n; i++) {
     const tx = Math.floor(x0 + ((x1 - x0) * i) / n)
     const ty = Math.floor(y0 + ((y1 - y0) * i) / n)
     const own = wallAt(s, tx, ty)
-    if (own && own.team === team && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
+    if (own && own.side === side && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
     if (bulletBlocked(s, tx, ty)) return false
   }
   return true
@@ -696,12 +787,12 @@ function autoAimAt(s: MatchState, p: Player, cone?: { x: number; y: number }): {
   }
   const consider = (x: number, y: number) => {
     const d = Math.hypot(x - p.x, y - p.y)
-    if (d < bestD && d > 1e-3 && inCone(x, y) && clearShot(s, p.x, p.y, x, y, p.team)) {
+    if (d < bestD && d > 1e-3 && inCone(x, y) && clearShot(s, p.x, p.y, x, y, p.side)) {
       best = { x, y }
       bestD = d
     }
   }
-  if (isCombat(s)) for (const o of s.players) if (o.alive && o.team !== p.team) consider(o.x, o.y)
+  if (isCombat(s)) for (const o of s.players) if (o.alive && o.side !== p.side) consider(o.x, o.y)
   for (const z of s.zombies) if (z.hp > 0) consider(z.x, z.y)
   if (!best) return null
   const t: Point = best
@@ -753,16 +844,48 @@ function resolveKnife(s: MatchState, p: Player) {
   if (z.hp <= 0) rewardZombieKill(s, p.slot)
 }
 
+/** Todos contra todos: la esquina más lejos de los rivales vivos y de los zombis. */
+function safestSpawn(s: MatchState, p: Player): Point {
+  let best = s.ffaSpawns[p.slot - 1]
+  let bestScore = -Infinity
+  for (const sp of s.ffaSpawns) {
+    let score = Infinity
+    for (const o of s.players) if (o !== p && o.alive) score = Math.min(score, Math.hypot(o.x - sp.x, o.y - sp.y))
+    for (const z of s.zombies) score = Math.min(score, Math.hypot(z.x - sp.x, z.y - sp.y) + 3)
+    if (score > bestScore) {
+      bestScore = score
+      best = sp
+    }
+  }
+  return best
+}
+
+/** Un jugador se fue a mitad de partida (todos contra todos): queda eliminado sin terminarla. */
+export function eliminatePlayer(s: MatchState, slot: Slot) {
+  const p = s.players.find((o) => o.slot === slot)
+  if (!p) return
+  p.alive = false
+  p.hp = 0
+  p.lives = 0
+  p.respawnAt = null
+  s.events.push({ type: 'eliminated', slot })
+}
+
 function killPlayer(s: MatchState, p: Player, killerSlot: Slot | null) {
   p.alive = false
   p.hp = 0
   p.deaths++
-  p.respawnAt = s.cores[p.team].hp > 0 ? s.time + PLAYER.respawnS : null
+  if (p.lives !== null) {
+    // Todos contra todos: se pierde una vida; sin vidas, queda eliminado.
+    p.lives = Math.max(0, p.lives - 1)
+    p.respawnAt = p.lives > 0 ? s.time + FFA.respawnS : null
+  } else p.respawnAt = s.cores[p.team].hp > 0 ? s.time + PLAYER.respawnS : null
   if (killerSlot) {
     const killer = s.players.find((o) => o.slot === killerSlot)
-    if (killer && killer.team !== p.team) killer.kills++
+    if (killer && killer.side !== p.side) killer.kills++
   }
   s.events.push({ type: 'playerDied', slot: p.slot, x: p.x, y: p.y })
+  if (p.lives === 0) s.events.push({ type: 'eliminated', slot: p.slot })
 }
 
 function damagePlayer(s: MatchState, p: Player, dmg: number, sourceSlot: Slot | null) {
@@ -776,7 +899,7 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
   if (!p.alive) {
     p.knife = null
     if (p.respawnAt !== null && s.time >= p.respawnAt) {
-      const sp = spawnPoint(s.map, p.slot)
+      const sp = s.ffa ? safestSpawn(s, p) : spawnPoint(s.map, p.slot)
       Object.assign(p, { x: sp.x, y: sp.y, px: sp.x, py: sp.y, hp: PLAYER.maxHp, alive: true, respawnAt: null })
     }
     p.aim = null
@@ -806,7 +929,7 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
     }
     // Velocidad máxima validada por el servidor: no depende de los FPS del cliente.
     const speed = PLAYER.speed * perksOf(p.survivor).speed
-    moveEntity(s, p, mx * speed * dt, my * speed * dt, PLAYER.radius, p.team)
+    moveEntity(s, p, mx * speed * dt, my * speed * dt, PLAYER.radius, p.side)
   }
 
   p.fireCd = Math.max(0, p.fireCd - dt)
@@ -839,6 +962,7 @@ const enemyTeam = (t: Team): Team => (t === 1 ? 2 : 1)
 
 /** Daña el núcleo enemigo y lo cuenta en la estadística de quien disparó. */
 function hitCore(s: MatchState, ownerSlot: Slot, dmg: number) {
+  if (s.ffa) return
   const enemy = enemyTeam(teamOf(ownerSlot))
   if (s.cores[enemy].hp <= 0) return
   const before = s.cores[enemy].hp
@@ -860,9 +984,9 @@ function explode(s: MatchState, b: Bullet) {
   for (const [i, prop] of [...s.props]) if (Math.hypot(prop.x - b.x, prop.y - b.y) <= r + 0.5) damageProp(s, i, b.splash, b.ownerSlot)
   if (!isCombat(s)) return
   for (const p of s.players)
-    if (p.alive && p.team !== b.ownerTeam && Math.hypot(p.x - b.x, p.y - b.y) <= r) damagePlayer(s, p, b.splash, b.ownerSlot)
+    if (p.alive && p.side !== b.ownerSide && Math.hypot(p.x - b.x, p.y - b.y) <= r) damagePlayer(s, p, b.splash, b.ownerSlot)
   for (const [key, st] of [...s.structures]) {
-    if (st.team === b.ownerTeam) continue
+    if (st.side === b.ownerSide) continue
     const cx = (key % s.map.w) + 0.5
     const cy = Math.floor(key / s.map.w) + 0.5
     if (Math.hypot(cx - b.x, cy - b.y) > r + 0.3) continue
@@ -943,7 +1067,7 @@ function updateBullets(s: MatchState, dt: number) {
       }
       if (pvp) {
         for (const p of s.players) {
-          if (p.alive && p.team !== b.ownerTeam && Math.abs(p.x - b.x) < 0.4 && Math.abs(p.y - b.y) < 0.4) {
+          if (p.alive && p.side !== b.ownerSide && Math.abs(p.x - b.x) < 0.4 && Math.abs(p.y - b.y) < 0.4) {
             if (b.kind === 'rocket') {
               explode(s, b)
               return false
@@ -956,7 +1080,7 @@ function updateBullets(s: MatchState, dt: number) {
       }
       // Tus paredes y torretas no frenan tus balas: se puede defender la base desde dentro.
       const own = wallAt(s, tx, ty)
-      if (own && own.team === b.ownerTeam && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
+      if (own && own.side === b.ownerSide && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
       if (bulletBlocked(s, tx, ty)) {
         if (b.kind === 'rocket') {
           explode(s, b)
@@ -965,7 +1089,7 @@ function updateBullets(s: MatchState, dt: number) {
         const prop = s.propAt.get(tileIndex(tx, ty))
         if (prop !== undefined) damageProp(s, prop, b.damage, b.ownerSlot)
         const wall = wallAt(s, tx, ty)
-        if (wall && wall.team !== b.ownerTeam && pvp) {
+        if (wall && wall.side !== b.ownerSide && pvp) {
           wall.hp = applyDamage(wall.hp, b.damage)
           if (wall.hp <= 0) s.structures.delete(tileIndex(tx, ty))
         }
@@ -982,7 +1106,7 @@ function updateBullets(s: MatchState, dt: number) {
   })
 }
 
-/** Solo visual (mismas reglas): oleada 1 normales, oleada 2 rápidos, horda final mezclada con tanques. */
+/** Oleada 1 normales, oleada 2 sobre todo rápidos, horda final mezclada con tanques (rasgos en ZOMBIE_TRAITS). */
 function zombieKindFor(wave: number, n: number): ZombieKind {
   if (wave === 1) return 'normal'
   if (wave === 2) return n % 3 === 0 ? 'normal' : 'fast'
@@ -995,8 +1119,13 @@ function spawnZombies(s: MatchState) {
     const point = s.map.spawns[sp.cursor++ % s.map.spawns.length]
     const x = point.x + 0.5 + (s.rng.next() - 0.5) * 0.6
     const y = point.y + 0.5 + (s.rng.next() - 0.5) * 0.6
-    const hp = Math.round(zombieHp(sp.wave) * s.difficulty.hp)
-    s.zombies.push({ id: s.nextId++, x, y, px: x, py: y, hp, maxHp: hp, damage: zombieDamage(sp.wave) * s.difficulty.damage, attackCd: 0, retargetAt: 0, trapAcc: 0, target: null, kind: zombieKindFor(sp.wave, sp.cursor), attackAt: -1, hurtAt: -1 })
+    const kind = zombieKindFor(sp.wave, sp.cursor)
+    const trait = ZOMBIE_TRAITS[kind]
+    const hp = Math.round(zombieHp(sp.wave) * s.difficulty.hp * trait.hp)
+    s.zombies.push({
+      id: s.nextId++, x, y, px: x, py: y, hp, maxHp: hp, damage: zombieDamage(sp.wave) * s.difficulty.damage * trait.damage,
+      attackCd: 0, retargetAt: 0, trapAcc: 0, target: null, kind, speedMul: trait.speed, attackAt: -1, hurtAt: -1,
+    })
     sp.remaining--
     sp.nextAt += sp.interval
   }
@@ -1191,7 +1320,7 @@ function updateZombies(s: MatchState, dt: number) {
 
     // Sigue el camino más corto (rodea agua, árboles y edificios); si una pared estorba, la golpea.
     const dir = pathDirection(s, z, t, dx / dist, dy / dist)
-    const step = ZOMBIE.speed * dt
+    const step = ZOMBIE.speed * z.speedMul * dt
     const hit = moveEntity(s, z, dir.x * step, dir.y * step, ZOMBIE.radius)
     if (hit) {
       const wall = wallAt(s, hit.x, hit.y)
@@ -1256,7 +1385,7 @@ function updateTraps(s: MatchState, dt: number) {
     }
     if (!isCombat(s)) continue
     for (const p of s.players) {
-      if (!p.alive || p.team === st.team || !on(p)) continue
+      if (!p.alive || p.side === st.side || !on(p)) continue
       const d = tick(p)
       if (d > 0) damagePlayer(s, p, d, st.owner)
     }
@@ -1290,6 +1419,10 @@ function updateArmory(s: MatchState, dt: number) {
       }
       p.turrets += ARMORY.turrets
       p.medkits += ARMORY.medkits
+      if (s.ffa) {
+        p.wood += FFA.armoryWood
+        p.metal += FFA.armoryMetal
+      }
       p.weapon = loot.weapon
       a.available = false
       a.openedBy = p.slot
@@ -1325,7 +1458,7 @@ function updateTurrets(s: MatchState, dt: number) {
     if (!target && pvp)
       for (const p of s.players) {
         const d = Math.hypot(p.x - cx, p.y - cy)
-        if (p.alive && p.team !== st.team && d < best) {
+        if (p.alive && p.side !== st.side && d < best) {
           best = d
           target = p
         }
@@ -1337,7 +1470,7 @@ function updateTurrets(s: MatchState, dt: number) {
     const x = cx + ux * 0.55
     const y = cy + uy * 0.55
     s.bullets.push({
-      id: s.nextId++, owner: `turret:${key}`, ownerSlot: st.owner, ownerTeam: st.team, x, y, px: x, py: y, vx: ux * BULLET.speed, vy: uy * BULLET.speed,
+      id: s.nextId++, owner: `turret:${key}`, ownerSlot: st.owner, ownerTeam: st.team, ownerSide: st.side, x, y, px: x, py: y, vx: ux * BULLET.speed, vy: uy * BULLET.speed,
       damage: TURRET.damage, traveled: 0, kind: 'bullet', speed: BULLET.speed, range: BULLET.range, pierce: 1, hits: [], splash: 0,
     })
     st.shotAt = s.time
@@ -1353,6 +1486,60 @@ function updateTurrets(s: MatchState, dt: number) {
 // ---------------------------------------------------------------------------
 // Fases y victoria
 // ---------------------------------------------------------------------------
+
+/** Elige un tipo de arma del suelo según su peso. */
+function randomPickupKind(s: MatchState): PickupKind {
+  const entries = Object.entries(PICKUPS) as [PickupKind, { weight: number }][]
+  let r = s.rng.next() * entries.reduce((n, [, v]) => n + v.weight, 0)
+  for (const [k, v] of entries) {
+    r -= v.weight
+    if (r <= 0) return k
+  }
+  return 'shotgun'
+}
+
+/** Pone un arma en una casilla de piso libre, lejos de los jugadores. */
+function spawnPickup(s: MatchState) {
+  for (let i = 0; i < 40; i++) {
+    const x = s.rng.int(2, s.map.w - 3)
+    const y = s.rng.int(2, s.map.h - 3)
+    const idx = tileIndex(x, y)
+    if (isSolidTileKind(s.map.tiles[idx]) || s.map.ground[idx] === Ground.PLAZA || s.structures.has(idx)) continue
+    if (s.pickups.some((p) => Math.hypot(p.x - (x + 0.5), p.y - (y + 0.5)) < 3)) continue
+    if (s.players.some((p) => p.alive && Math.hypot(p.x - (x + 0.5), p.y - (y + 0.5)) < 4)) continue
+    const kind = randomPickupKind(s)
+    s.pickups.push({ id: s.nextId++, x: x + 0.5, y: y + 0.5, kind, ammo: PICKUPS[kind].ammo })
+    return
+  }
+}
+
+/** Todos contra todos: aparecen armas con el tiempo y se recogen al pasar encima. */
+function updatePickups(s: MatchState) {
+  if (!s.ffa) return
+  if (s.time >= s.nextPickupAt) {
+    const n = s.nextPickupAt === 0 ? FFA.initialPickups : 1
+    for (let i = 0; i < n && s.pickups.length < FFA.maxPickups; i++) spawnPickup(s)
+    s.nextPickupAt = s.time + FFA.pickupEveryS
+  }
+  s.pickups = s.pickups.filter((it) => {
+    const p = s.players.find((o) => o.alive && Math.hypot(o.x - it.x, o.y - it.y) < 0.7)
+    if (!p) return true
+    if (it.kind === 'medkit') p.medkits += it.ammo
+    else if (it.kind === 'shotgun') {
+      p.shells += it.ammo
+      p.weapon = 'shotgun'
+    } else {
+      if (p.heavy === it.kind) p.heavyAmmo += it.ammo
+      else {
+        p.heavy = it.kind
+        p.heavyAmmo = it.ammo
+      }
+      p.weapon = it.kind
+    }
+    s.events.push({ type: 'pickup', slot: p.slot, kind: it.kind, x: it.x, y: it.y })
+    return false
+  })
+}
 
 function updatePhase(s: MatchState) {
   let idx = PHASES.findIndex((ph) => s.time >= ph.start && s.time < ph.end)
@@ -1383,7 +1570,32 @@ function updatePhase(s: MatchState) {
   }
 }
 
+/** Todos contra todos: gana el último con vidas; al acabarse el tiempo, más vidas y luego más bajas. */
+function checkVictoryFfa(s: MatchState) {
+  const inGame = s.players.filter((p) => p.alive || p.respawnAt !== null)
+  const lives = (p: Player) => (p.lives ?? 0) + (p.alive ? 0 : 0)
+  if (s.players.length >= 2 && inGame.length <= 1) {
+    s.result = { winner: 0, winnerSlot: inGame[0]?.slot ?? null, reason: 'Último superviviente en pie', durationS: s.time, byTime: false }
+    return
+  }
+  if (s.time < MATCH_DURATION) return
+  const ranked = [...s.players].sort((a, b) => lives(b) - lives(a) || b.kills - a.kills)
+  const [first, second] = ranked
+  const tie = !!second && lives(first) === lives(second) && first.kills === second.kills
+  s.result = {
+    winner: 0,
+    winnerSlot: tie ? null : first.slot,
+    reason: tie ? 'Empate total' : 'Tiempo agotado: más vidas y bajas',
+    durationS: MATCH_DURATION,
+    byTime: true,
+  }
+}
+
 function checkVictory(s: MatchState) {
+  if (s.ffa) {
+    checkVictoryFfa(s)
+    return
+  }
   // A team is out when its shared core is destroyed and none of its players can still come back.
   const eliminated = (team: Team) =>
     s.cores[team].hp <= 0 && s.players.filter((o) => o.team === team).every((p) => !p.alive && p.respawnAt === null)
@@ -1455,6 +1667,7 @@ export function step(s: MatchState, inputs: Record<string, PlayerInput>, command
   updateTraps(s, dt)
   updateTurrets(s, dt)
   updateArmory(s, dt)
+  updatePickups(s)
   for (const z of s.zombies) if (z.hp <= 0) s.events.push({ type: 'zombieDied', x: z.x, y: z.y, kind: z.kind })
   s.zombies = s.zombies.filter((z) => z.hp > 0)
 

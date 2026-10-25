@@ -84,6 +84,47 @@ export const EXPLOSIVES = {
 } as const
 export type ExplosiveKind = keyof typeof EXPLOSIVES
 
+/** Rasgos reales de cada tipo de zombi (antes solo cambiaba el sprite). */
+export const ZOMBIE_TRAITS = {
+  normal: { hp: 1, speed: 1, damage: 1 },
+  // Rápido: corre mucho más pero aguanta menos.
+  fast: { hp: 0.7, speed: 1.4, damage: 1 },
+  // Tanque: lento, muy resistente y pega más fuerte.
+  tank: { hp: 2.5, speed: 0.7, damage: 1.5 },
+} as const
+
+/**
+ * Todos contra todos: sin núcleos ni bases; cada jugador tiene vidas, se construye en todo el mapa
+ * y las armas aparecen al azar por el mapa con munición limitada.
+ */
+export const FFA = {
+  /** Vidas que el anfitrión puede elegir en el lobby. */
+  livesOptions: [3, 5] as const,
+  defaultLives: 3,
+  respawnS: 4,
+  /** Se empieza con pistola, 2 botiquines y un poco de madera. */
+  start: { wood: 10, metal: 0, medkits: 2, shells: 0 },
+  /** Armas en el suelo: una nueva cada N segundos, como mucho M a la vez. */
+  pickupEveryS: 10,
+  maxPickups: 8,
+  initialPickups: 4,
+  /** La caja del centro además da materiales. */
+  armoryWood: 12,
+  armoryMetal: 6,
+  /** No se construye cerca de donde aparecen jugadores o zombis. */
+  noBuildRadius: 2,
+}
+
+export type PickupKind = 'shotgun' | 'medkit' | 'smg' | 'sniper' | 'rocket'
+/** Probabilidad (peso) y munición de cada arma del suelo: las más fuertes salen menos. */
+export const PICKUPS: Record<PickupKind, { weight: number; ammo: number }> = {
+  shotgun: { weight: 35, ammo: 10 },
+  medkit: { weight: 25, ammo: 1 },
+  smg: { weight: 20, ammo: 60 },
+  sniper: { weight: 10, ammo: 5 },
+  rocket: { weight: 10, ammo: 2 },
+}
+
 /** Explosión del cohete: daña a todo lo enemigo dentro del radio (casillas). */
 export const ROCKET = { radius: 1.6, damage: 55 }
 

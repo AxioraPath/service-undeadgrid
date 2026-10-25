@@ -10,6 +10,7 @@ import type {
   SetDifficultyPayload,
   SetMapPayload,
   SetModePayload,
+  SetLivesPayload,
   SetTeamPayload,
 } from './payloads';
 import type { GameCommandPayload, GameInputPayload, GameStateDto, GameSyncData } from './game';
@@ -54,6 +55,8 @@ export interface ClientToServerEvents {
   ) => void;
   /** Host only, lobby only: switch between '1v1' and '2v2'. Slots may be remapped; re-read yours from the snapshot by `id`. */
   'lobby:setMode': (p: SetModePayload, ack: (r: Ack<RoomSnapshot>) => void) => void;
+  /** Host, lobby, todos contra todos: vidas por jugador (3 o 5). */
+  'lobby:setLives': (p: SetLivesPayload, ack: (r: Ack<RoomSnapshot>) => void) => void;
   /** 2v2 lobby only: move to a team (max 2 per team). The slot is re-derived from team + seat. */
   'room:setTeam': (p: SetTeamPayload, ack: (r: Ack<RoomSnapshot>) => void) => void;
   'lobby:start': (ack: (r: Ack<RoomSnapshot>) => void) => void;

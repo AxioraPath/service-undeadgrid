@@ -70,8 +70,10 @@ export interface RectDto extends PointDto {
 /** Mapa completo; se pide una vez con `game:sync` al entrar a la partida. */
 export interface GameMapDto {
   seed: number;
-  /** Tema visual y de generación: 'ciudad' o 'industrial'. */
+  /** Tema visual y de generación: 'ciudad', 'industrial' o 'desierto'. */
   theme: string;
+  /** Todos contra todos: sin núcleos, bases ni cajas de equipo. */
+  ffa: boolean;
   w: number;
   h: number;
   /** Capa de colisión (Tile) por casilla, fila a fila. */
@@ -116,6 +118,8 @@ export interface GamePlayerDto {
   weapon: 'pistol' | 'shotgun' | 'smg' | 'sniper' | 'rocket';
   build: 'wall' | 'trap' | 'turret';
   /** Arma pesada de la caja de armamento y su munición; torretas por colocar. */
+  /** Todos contra todos: vidas que le quedan (null en los otros modos). */
+  lives: number | null;
   heavy: 'smg' | 'sniper' | 'rocket' | null;
   heavyAmmo: number;
   turrets: number;
@@ -150,6 +154,8 @@ export type GameEventDto =
   | { type: 'shot'; x: number; y: number; dirX: number; dirY: number; slot: Slot }
   | { type: 'explosion'; x: number; y: number; big?: boolean }
   | { type: 'propDestroyed'; index: number }
+  | { type: 'pickup'; slot: Slot; kind: 'shotgun' | 'medkit' | 'smg' | 'sniper' | 'rocket'; x: number; y: number }
+  | { type: 'eliminated'; slot: Slot }
   | { type: 'knife'; slot: Slot; x: number; y: number }
   | { type: 'hit'; x: number; y: number }
   | { type: 'zombieDied'; x: number; y: number; kind: 'normal' | 'fast' | 'tank' }
@@ -179,6 +185,8 @@ export interface GameStateDto {
   crates: Record<Team, StockDto>;
   /** Caja de armamento: disponible, quién la abrió y segundos que lleva abriéndola cada slot. */
   armory: { available: boolean; openedBy: Slot | null; progress: Partial<Record<Slot, number>> };
+  /** Todos contra todos: armas en el suelo [id, x, y, tipo(0 escopeta | 1 botiquín | 2 ametralladora | 3 sniper | 4 cohetes)]. */
+  pickups: [number, number, number, number][];
   /** Barriles y tanques del mapa (índice en `map.objects`): los que explotaron y los dañados [índice, hp, maxHp]. */
   props: { destroyed: number[]; damaged: [number, number, number][] };
   /** Torretas: [casilla, aimX, aimY, tiros en el cargador, recargando (0/1), disparando (0/1)]. */
@@ -186,7 +194,7 @@ export interface GameStateDto {
   /** Eventos ocurridos desde el último estado (efectos visuales). */
   events: GameEventDto[];
   /** `winner` is a TEAM (1v1: same as the winning slot); 0 = draw. */
-  result: { winner: Team | 0; reason: string; durationS: number; byTime: boolean } | null;
+  result: { winner: Team | 0; winnerSlot?: Slot | null; reason: string; durationS: number; byTime: boolean } | null;
 }
 
 export interface GameSyncData {

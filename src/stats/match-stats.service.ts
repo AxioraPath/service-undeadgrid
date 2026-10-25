@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { Room } from '../domain/room';
-import { CORE_HP, MAP_NAMES, slotsOf, teamOf } from '../config/game.config';
-import type { MatchOverPayload, MatchPlayerStats } from '../contracts';
+import { CORE_HP, MAP_NAMES, slotsOf, teamOf, type Slot, type Team } from '../config/game.config';
+import type { MatchOverPayload, MatchPlayerStats, MatchResult } from '../contracts';
 import { ProgressionService } from '../progression/progression.service';
 import { MIN_MATCH_DURATION_S, computeMatchXp } from '../progression/xp';
 
@@ -68,10 +68,16 @@ export function matchOverDetails(room: Room): Omit<MatchOverPayload, 'xp'> {
     stats,
     durationS,
     winner: result?.winner ?? null,
+    ...(room.mode === 'ffa' ? { winnerSlot: result?.winnerSlot ?? null } : {}),
     reason: result?.reason ?? 'time_out',
     mapName: mapNames[room.mapId] ?? room.mapId,
   };
 }
+
+/** ¿Ganó este jugador? Todos contra todos compara el slot ganador; los otros modos, el equipo. */
+const isWinner = (room: Room, result: MatchResult, p: { slot: Slot; team: Team }) =>
+  room.mode === 'ffa' ? result.winnerSlot === p.slot : result.winner === p.team
+const isDraw = (room: Room, result: MatchResult) => (room.mode === 'ffa' ? result.winnerSlot == null : result.winner === null)
 
 /** XP earned per slot for a finished match (same function used for persistence and the match:over event). */
 export function matchXpBySlot(room: Room): Record<number, number> {
@@ -80,11 +86,11 @@ export function matchXpBySlot(room: Room): Record<number, number> {
   if (!result) return out;
   const { durationS, bySlot } = matchSummary(room);
   for (const p of room.players.values()) {
-    const won = result.winner === p.team;
+    const won = isWinner(room, result, p);
     const c = bySlot[p.slot];
     out[p.slot] = computeMatchXp({
       won,
-      draw: result.winner === null,
+      draw: isDraw(room, result),
       zombieKills: c.zombieKills,
       playerKills: c.kills,
       structuresBuilt: c.structuresBuilt,
@@ -135,7 +141,7 @@ export class MatchStatsService {
                 slot: p.slot,
                 name: p.name,
                 survivor: p.survivor,
-                isWinner: result.winner === p.team,
+                isWinner: isWinner(room, result, p),
                 coreHpEnd: room.cores[p.team] ?? 0,
                 ...bySlot[p.slot],
               })),
@@ -146,8 +152,8 @@ export class MatchStatsService {
         // Actualiza stats de cada jugador autenticado.
         for (const p of players) {
           if (!p.userId) continue;
-          const won = result.winner === p.team;
-          const draw = result.winner === null;
+          const won = isWinner(room, result, p);
+          const draw = isDraw(room, result);
           const lost = !won && !draw;
           const combat = bySlot[p.slot];
           // XP + missions first, so milestone rows seeded from lifetime stats don't double count this match.

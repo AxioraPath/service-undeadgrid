@@ -378,7 +378,7 @@ describe('Combate nuevo: disparo, construcción, caja de armamento y torretas', 
     const key = (b.y + 5) * MAP_W + b.x + 1;
     expect(s.structures.get(key)?.type).toBe('turret');
     expect(p.turrets).toBe(0);
-    s.zombies.push({ id: 999, x: b.x + 1.5, y: b.y + 8.5, px: 0, py: 0, hp: 10_000, maxHp: 10_000, damage: 0, attackCd: 99, retargetAt: 1e9, trapAcc: 0, kind: 'tank', attackAt: -1, hurtAt: -1, target: null });
+    s.zombies.push({ id: 999, x: b.x + 1.5, y: b.y + 8.5, px: 0, py: 0, hp: 10_000, maxHp: 10_000, damage: 0, attackCd: 99, retargetAt: 1e9, trapAcc: 0, kind: 'tank', speedMul: 1, attackAt: -1, hurtAt: -1, target: null });
     run(s, {}, Math.ceil(30 * TURRET.fireInterval * TURRET.magazine) + 5);
     const t = s.structures.get(key)!;
     expect(t.ammo).toBe(0);
@@ -391,7 +391,7 @@ describe('Combate nuevo: disparo, construcción, caja de armamento y torretas', 
     // Un muro justo arriba del jugador: puede subir hasta que la caja de los pies toca la casilla de arriba.
     const tx = Math.floor(p.x);
     const ty = Math.floor(p.y) - 1;
-    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 2, team: 2, orient: 'h' });
+    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 2, team: 2, side: 2, orient: 'h' });
     run(s, { up: true }, 30);
     expect(p.y + BODY.top).toBeGreaterThanOrEqual(ty + 1 - 1e-6);
     expect(p.y + BODY.top).toBeLessThan(ty + 1.05);
@@ -451,7 +451,7 @@ describe('armas nuevas: cuchillo, sniper y lanzacohetes', () => {
     return { s, p };
   };
   const zombie = (s: ReturnType<typeof setup>['s'], x: number, y: number, hp = 200) => {
-    const z = { id: s.nextId++, x, y, px: x, py: y, hp, maxHp: hp, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, attackAt: -1, hurtAt: -1, target: null };
+    const z = { id: s.nextId++, x, y, px: x, py: y, hp, maxHp: hp, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, speedMul: 1, attackAt: -1, hurtAt: -1, target: null };
     s.zombies.push(z);
     return z;
   };
@@ -513,7 +513,12 @@ describe('armas nuevas: cuchillo, sniper y lanzacohetes', () => {
     s.time = 120;
     step(s, {}, [], 1 / 30);
     Object.assign(p, { x: s.armory.x, y: s.armory.y + 0.5 });
-    for (let i = 0; i < 30 * 5 + 2; i++) step(s, {}, [], 1 / 30);
+    // Sin zombis: aquí solo importa el botín (los rápidos de la oleada 2 cancelarían la apertura).
+    for (let i = 0; i < 30 * 5 + 2; i++) {
+      s.zombies = [];
+      s.spawn.remaining = 0;
+      step(s, {}, [], 1 / 30);
+    }
     expect(p.heavy).toBe('sniper');
     expect(p.weapon).toBe('sniper');
   });
@@ -599,7 +604,7 @@ describe('colisiones, explosivos y paredes propias', () => {
     const [index, prop] = [...s.props].find(([, p]) => p.kind === 'barrel')!;
     expect(prop.hp).toBe(EXPLOSIVES.barrel.hp);
     const cell = prop.cells[0];
-    const z = { id: 999, x: prop.x + 1, y: prop.y, px: 0, py: 0, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, attackAt: -1, hurtAt: -1, target: null };
+    const z = { id: 999, x: prop.x + 1, y: prop.y, px: 0, py: 0, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, speedMul: 1, attackAt: -1, hurtAt: -1, target: null };
     s.zombies.push(z);
     const p = s.players[0];
     // Dispara desde la izquierda del barril hacia él.
@@ -623,7 +628,7 @@ describe('colisiones, explosivos y paredes propias', () => {
     const [a, b] = s.players;
     const tx = Math.floor(a.x) + 1;
     const ty = Math.floor(a.y);
-    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 1, team: 1, orient: 'v' });
+    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 1, team: 1, side: 1, orient: 'v' });
     const x0 = a.x;
     for (let i = 0; i < 20; i++) step(s, { a: { ...idle, right: true } }, [], 1 / 30);
     expect(a.x).toBeGreaterThan(tx + 0.3);
@@ -643,7 +648,7 @@ describe('autoapuntado (celular)', () => {
     return { s, p };
   };
   const zombie = (s: ReturnType<typeof setup>['s'], x: number, y: number) => {
-    s.zombies.push({ id: s.nextId++, x, y, px: x, py: y, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, attackAt: -1, hurtAt: -1, target: null });
+    s.zombies.push({ id: s.nextId++, x, y, px: x, py: y, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, speedMul: 1, attackAt: -1, hurtAt: -1, target: null });
   };
 
   it('un toque dispara hacia el zombi más cercano aunque el jugador mire a otro lado, con un desfase pequeño', () => {
@@ -691,7 +696,7 @@ describe('asistencia de apuntado (celular, apuntado manual)', () => {
     const s = createMatch({ seed: 11, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
     const p = s.players[0];
     Object.assign(p, { x: s.map.armory.x + 0.5, y: s.map.armory.y + 1.5 });
-    s.zombies.push({ id: 900, x: p.x + 5, y: p.y, px: p.x + 5, py: p.y, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, attackAt: -1, hurtAt: -1, target: null });
+    s.zombies.push({ id: 900, x: p.x + 5, y: p.y, px: p.x + 5, py: p.y, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, speedMul: 1, attackAt: -1, hurtAt: -1, target: null });
     return { s, p };
   };
   const shotAngle = (aimDeg: number) => {

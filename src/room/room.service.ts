@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import {
   LIFECYCLE,
   MODE_CAPACITY,
+  MODE_MIN_PLAYERS,
   type GameMode,
   type Team,
 } from '../config/game.config';
@@ -11,7 +12,7 @@ import { newSessionId, randomRoomCode, randomSeed } from '../common/ids';
 import { Player } from '../domain/player';
 import { Room } from '../domain/room';
 import { TICK_DT } from '../game/constants';
-import { createMatch, phaseOf, step, ticksFor, type Command, type PlayerInput } from '../game/engine';
+import { createMatch, eliminatePlayer, phaseOf, step, ticksFor, type Command, type PlayerInput } from '../game/engine';
 import { encodeMap, encodeState } from '../game/snapshot';
 import type { GameSyncData } from '../contracts';
 
@@ -287,6 +288,14 @@ export class RoomService {
     return room;
   }
 
+  /** Todos contra todos: el anfitrión elige 3 o 5 vidas por jugador. */
+  setLives(code: string, socketId: string, lives: number): Room {
+    const room = this.requireHostEditable(code, socketId);
+    room.lives = lives;
+    this.bump(room);
+    return room;
+  }
+
   /** Valida que el socket sea el host y que la sala esté en un estado editable. */
   private requireHostEditable(code: string, socketId: string): Room {
     const { room, player } = this.playerInRoom(code, socketId);
@@ -314,8 +323,11 @@ export class RoomService {
     if (room.status !== 'lobby') {
       throw new DomainError(ErrorCode.BAD_STATE, 'La partida no puede iniciarse ahora');
     }
-    if (room.players.size !== room.capacity) {
-      throw new DomainError(ErrorCode.BAD_STATE, 'Faltan jugadores para empezar');
+    if (room.mode === 'ffa' ? room.players.size < MODE_MIN_PLAYERS.ffa : room.players.size !== room.capacity) {
+      throw new DomainError(
+        ErrorCode.BAD_STATE,
+        room.mode === 'ffa' ? 'Se necesitan al menos 2 jugadores' : 'Faltan jugadores para empezar',
+      );
     }
     if (!room.teamsBalanced()) {
       throw new DomainError(ErrorCode.BAD_STATE, 'Cada equipo debe tener 2 jugadores');
@@ -340,6 +352,8 @@ export class RoomService {
       seed: room.seed,
       difficulty: room.difficulty,
       mapId: room.mapId,
+      ffa: room.mode === 'ffa',
+      lives: room.lives,
       players: [...room.players.values()].map((p) => ({
         id: p.sessionId,
         slot: p.slot,
@@ -427,10 +441,11 @@ export class RoomService {
     if (stepped) room.touch();
 
     if (match.result) {
-      const { winner, byTime } = match.result;
+      const { winner, winnerSlot, byTime } = match.result;
       this.finish(room, {
         winner: winner === 0 ? null : winner,
-        reason: byTime ? 'time_out' : 'core_destroyed',
+        ...(match.ffa ? { winnerSlot: winnerSlot ?? null } : {}),
+        reason: byTime ? 'time_out' : match.ffa ? 'last_standing' : 'core_destroyed',
         cores: { ...room.cores },
       });
       return { stepped, phaseChanged, finished: true };
@@ -461,14 +476,14 @@ export class RoomService {
    */
   requestRematch(code: string, socketId: string): { room: Room; started: boolean } {
     const { room, player } = this.requireResults(code, socketId);
-    const everyoneHere =
-      room.players.size === room.capacity && [...room.players.values()].every((p) => p.connected);
+    const seats = room.mode === 'ffa' ? Math.max(MODE_MIN_PLAYERS.ffa, room.players.size) : room.capacity;
+    const everyoneHere = room.players.size === seats && [...room.players.values()].every((p) => p.connected);
     if (!everyoneHere) {
       throw new DomainError(ErrorCode.BAD_STATE, 'Tu rival ya no está en la sala');
     }
     room.rematch.add(player.slot);
     this.bump(room);
-    if (room.rematch.size === room.capacity) {
+    if (room.rematch.size === (room.mode === 'ffa' ? room.players.size : room.capacity)) {
       room.resetForRematch(randomSeed());
       this.logger.log(`Sala ${room.code}: revancha -> preparación (seed ${room.seed})`);
       return { room, started: true };
@@ -544,6 +559,18 @@ export class RoomService {
     room.rematch.clear();
     // Match in progress: when a player's whole team is gone, the rival team wins by abandonment.
     // In 2v2 a team that still has a player keeps playing (the leaver's character stays idle).
+    if ((room.status === 'combat' || room.status === 'preparation') && room.mode === 'ffa') {
+      // Todos contra todos: quien se va queda eliminado; si solo queda uno, ese gana.
+      room.removePlayer(player.slot);
+      if (room.match) eliminatePlayer(room.match, player.slot);
+      if (room.players.size <= 1) {
+        const last = [...room.players.values()][0];
+        this.finish(room, { winner: null, winnerSlot: last?.slot ?? null, reason: 'opponent_left', cores: { ...room.cores } });
+      }
+      room.reassignHostIfNeeded();
+      this.bump(room);
+      return { room, player, closed: false };
+    }
     if (room.status === 'combat' || room.status === 'preparation') {
       const team = player.team;
       const rivalTeam: Team = team === 1 ? 2 : 1;

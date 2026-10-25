@@ -82,6 +82,9 @@ export const setDifficultySchema = z.object({ difficulty: difficultySchema });
 export type SetDifficultyPayload = z.infer<typeof setDifficultySchema>;
 
 export const setModeSchema = z.object({ mode: z.enum(GAME_MODES) });
+/** Todos contra todos: vidas por jugador (3 o 5). */
+export const setLivesSchema = z.object({ lives: z.union([z.literal(3), z.literal(5)]) });
+export type SetLivesPayload = z.infer<typeof setLivesSchema>;
 export type SetModePayload = z.infer<typeof setModeSchema>;
 
 export const setTeamSchema = z.object({ team: z.union([z.literal(1), z.literal(2)]) });

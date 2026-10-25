@@ -40,6 +40,7 @@ import {
   setDifficultySchema,
   setMapSchema,
   setModeSchema,
+  setLivesSchema,
   setTeamSchema,
 } from '../contracts/payloads';
 import { DomainError } from '../common/domain-error';
@@ -506,6 +507,20 @@ export class RoomGateway
       const { mode } = this.parse(setModeSchema, body);
       const room = this.rooms.setMode(code, client.id, mode);
       this.syncSocketSlots(room);
+      this.emitState(room);
+      return room.toSnapshot(this.now());
+    });
+  }
+
+  @SubscribeMessage('lobby:setLives')
+  async onSetLives(
+    @ConnectedSocket() client: AppSocket,
+    @MessageBody() body: unknown,
+  ): Promise<Ack<RoomSnapshot>> {
+    return this.handle(client, 'lobby:setLives', () => {
+      const code = this.requireRoomCode(client);
+      const { lives } = this.parse(setLivesSchema, body);
+      const room = this.rooms.setLives(code, client.id, lives);
       this.emitState(room);
       return room.toSnapshot(this.now());
     });

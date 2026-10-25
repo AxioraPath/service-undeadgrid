@@ -26,7 +26,7 @@ const bullet = (s: MatchState, owner: Slot, x: number, y: number, vx: number, vy
   id: s.nextId++,
   owner: `p${owner}`,
   ownerSlot: owner,
-  ownerTeam: teamOf(owner),
+  ownerTeam: teamOf(owner), ownerSide: teamOf(owner),
   x, y, px: x, py: y, vx, vy,
   damage: 15, traveled: 0, kind: 'bullet', speed: 16, range: 9, pierce: 1, hits: [], splash: 0,
 });
@@ -115,7 +115,7 @@ describe('2v2 engine', () => {
     Object.assign(player(s, 2), { x: 30, y: 20 });
     Object.assign(player(s, 4), { x: 31, y: 20 });
     // Team trap under the teammate.
-    s.structures.set(Math.floor(y) * s.map.w + Math.floor(x), { type: 'trap', hp: 1, maxHp: 1, owner: 1, team: 1, orient: 'h' });
+    s.structures.set(Math.floor(y) * s.map.w + Math.floor(x), { type: 'trap', hp: 1, maxHp: 1, owner: 1, team: 1, side: 1, orient: 'h' });
     // Rocket explosion right on the teammate.
     s.bullets.push({ ...bullet(s, 1, x, y, 0, 0), kind: 'rocket', speed: 10, splash: 55, damage: 40 });
     for (let i = 0; i < 20; i++) step(s, {}, [], 1 / 30);
@@ -133,7 +133,7 @@ describe('2v2 engine', () => {
     const ty = b.y + b.h - 2;
     const tx = b.x + 2;
     const key = ty * s.map.w + tx;
-    s.structures.set(key, { type: 'wood', hp: 100, maxHp: 100, owner: 3, team: 1, orient: 'h' });
+    s.structures.set(key, { type: 'wood', hp: 100, maxHp: 100, owner: 3, team: 1, side: 1, orient: 'h' });
     s.bullets.push(bullet(s, 1, tx - 0.4, ty + 0.5, 16, 0));
     step(s, {}, [], 1 / 30);
     expect(s.structures.get(key)!.hp).toBe(100); // passed through, no damage
