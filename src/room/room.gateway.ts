@@ -491,6 +491,10 @@ export class RoomGateway
       const code = this.requireRoomCode(client);
       const room = this.rooms.start(code, client.id);
       this.emitState(room);
+      // Iniciar lleva directo a "preparation": programa el arranque del combate.
+      if (room.status === 'preparation') {
+        this.orchestrator.scheduleCombatStart(room, COMBAT_START_DELAY_MS);
+      }
       return room.toSnapshot(this.now());
     });
   }

@@ -57,20 +57,31 @@ describe('RoomService (flujo 1v1)', () => {
     expect(() => svc.start(room.code, 's2')).toThrow(/host/i);
 
     svc.start(room.code, 's1');
-    expect(room.status).toBe('selection');
+    expect(room.status).toBe('preparation');
   });
 
-  it('avanza a preparación cuando ambos confirman superviviente', () => {
+  it('iniciar va directo a preparación con el superviviente elegido en el lobby', () => {
     const { room } = svc.create({ name: 'Ana', socketId: 's1', survivor: 'explorador' });
     svc.join({ code: room.code, name: 'Bob', socketId: 's2', survivor: 'mecanica' });
     svc.setReady(room.code, 's1', true);
     svc.setReady(room.code, 's2', true);
+    svc.selectSurvivor(room.code, 's2', 'explorador');
     svc.start(room.code, 's1');
-
-    svc.confirmSurvivor(room.code, 's1');
-    expect(room.status).toBe('selection');
-    svc.confirmSurvivor(room.code, 's2');
     expect(room.status).toBe('preparation');
+    expect(room.players.get(2)!.survivor).toBe('explorador');
+    for (const p of room.players.values()) expect(p.survivorConfirmed).toBe(true);
+  });
+
+  it('si el rival se va durante la selección, la sala vuelve al lobby', () => {
+    const { room } = svc.create({ name: 'Ana', socketId: 's1' });
+    svc.join({ code: room.code, name: 'Bob', socketId: 's2' });
+    svc.setReady(room.code, 's1', true);
+    svc.setReady(room.code, 's2', true);
+    room.transition('selection');
+    svc.leave(room.code, 's2');
+    expect(room.status).toBe('lobby');
+    expect(room.players.size).toBe(1);
+    expect(room.players.get(1)!.ready).toBe(false);
   });
 
   /** Lleva una sala nueva hasta el combate y devuelve la sala. */
@@ -80,8 +91,6 @@ describe('RoomService (flujo 1v1)', () => {
     svc.setReady(room.code, 's1', true);
     svc.setReady(room.code, 's2', true);
     svc.start(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's2');
     svc.beginCombat(room);
     return room;
   };
@@ -111,7 +120,7 @@ describe('RoomService (flujo 1v1)', () => {
 
     const moved = ana.x - x0;
     expect(moved).toBeGreaterThan(0);
-    expect(moved).toBeLessThanOrEqual(4 * 0.5 + 1e-6); // 4 casillas/s durante 0.5 s
+    expect(moved).toBeLessThanOrEqual(4 * 1.15 * 0.5 + 1e-6); // 4 casillas/s (+15 % del explorador) durante 0.5 s
   });
 
   it('gana quien destruye el núcleo rival y elimina al enemigo', () => {
@@ -179,9 +188,7 @@ describe('RoomService (flujo 1v1)', () => {
     svc.setReady(room.code, 's1', true);
     svc.setReady(room.code, 's2', true);
     svc.start(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's1');
     const bobSession = room.getBySocket('s2')!.sessionId;
-    svc.confirmSurvivor(room.code, 's2');
     svc.beginCombat(room);
 
     // Bob se cae: en combate el asiento se reserva (no termina la partida).
@@ -309,7 +316,7 @@ describe('RoomService (flujo 1v1)', () => {
       svc.setReady(room.code, 's1', true);
       svc.setReady(room.code, 's2', true);
       svc.start(room.code, 's1');
-      expect(room.status).toBe('selection');
+      expect(room.status).toBe('preparation');
     });
   });
 });

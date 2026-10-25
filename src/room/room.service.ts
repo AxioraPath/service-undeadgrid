@@ -245,8 +245,8 @@ export class RoomService {
    * El HOST inicia la partida. Validaciones server-side:
    *  - debe ser el host
    *  - sala llena (2 jugadores), ambos conectados y listos
-   * Transiciona lobby → selection (la confirmación de supervivientes llevará
-   * luego a preparation y de ahí al combate).
+   * El superviviente ya se eligió en el lobby, así que pasa directo a
+   * preparation (lobby → selection → preparation) y de ahí al combate.
    */
   start(code: string, socketId: string): Room {
     const { room, player } = this.playerInRoom(code, socketId);
@@ -263,7 +263,9 @@ export class RoomService {
       throw new DomainError(ErrorCode.BAD_STATE, 'No todos los jugadores están listos');
     }
     room.transition('selection');
-    this.logger.log(`Sala ${room.code}: host inició → selección`);
+    for (const p of room.players.values()) p.survivorConfirmed = true;
+    room.transition('preparation');
+    this.logger.log(`Sala ${room.code}: host inició → preparación`);
     return room;
   }
 
@@ -275,6 +277,7 @@ export class RoomService {
     room.transition('combat');
     room.match = createMatch({
       seed: room.seed,
+      difficulty: room.difficulty,
       players: [...room.players.values()].map((p) => ({
         id: p.sessionId,
         slot: p.slot,
@@ -488,6 +491,14 @@ export class RoomService {
     }
 
     room.removePlayer(player.slot);
+    // Si se va durante la selección, la sala vuelve al lobby para esperar a otro rival.
+    if (room.status === 'selection') {
+      room.transition('lobby');
+      for (const p of room.players.values()) {
+        p.ready = false;
+        p.survivorConfirmed = false;
+      }
+    }
     this.logger.log(
       `${voluntary ? 'Abandono' : 'Baja'} ${room.code} slot ${player.slot} "${player.name}"`,
     );

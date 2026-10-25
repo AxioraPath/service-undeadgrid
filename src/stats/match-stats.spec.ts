@@ -11,8 +11,6 @@ describe('matchSummary', () => {
     svc.setReady(room.code, 's1', true);
     svc.setReady(room.code, 's2', true);
     svc.start(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's2');
     svc.beginCombat(room);
     for (let t = 0; t < 70; t++) {
       clock += 1000;
@@ -53,8 +51,6 @@ describe('matchOverDetails', () => {
     svc.setReady(room.code, 's1', true);
     svc.setReady(room.code, 's2', true);
     svc.start(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's1');
-    svc.confirmSurvivor(room.code, 's2');
     svc.beginCombat(room);
     clock += 61_000;
     svc.tickCombat(room);

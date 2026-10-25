@@ -85,6 +85,37 @@ export const CRATE_REFILL: Stock = { wood: 4, metal: 2, medkits: 1, shells: 6 }
 
 export const REWARDS = { woodPerZombie: 1, zombiesPerMetal: 5 }
 
+/** Ventajas de cada superviviente (pequeñas, para no desbalancear el 1v1). */
+export interface SurvivorPerks {
+  /** Multiplica la velocidad al caminar. */
+  speed: number
+  /** Se suma a lo que trae al empezar. */
+  start: Partial<Stock>
+  /** Multiplica la vida que recupera una pared al repararla. */
+  repair: number
+}
+
+const NO_PERKS: SurvivorPerks = { speed: 1, start: {}, repair: 1 }
+
+export const SURVIVOR_PERKS: Record<string, SurvivorPerks> = {
+  // Explorador: más rápido y con más cartuchos para salir a pelear.
+  explorador: { speed: 1.15, start: { shells: 8 }, repair: 1 },
+  // Mecánica: más materiales al empezar y repara el doble.
+  mecanica: { speed: 1, start: { wood: 12, metal: 4 }, repair: 2 },
+}
+
+export const perksOf = (survivor: string): SurvivorPerks => SURVIVOR_PERKS[survivor] ?? NO_PERKS
+
+/** Dificultad de la sala: escala la cantidad, la vida y el daño de los zombis. */
+export const DIFFICULTY = {
+  'Estándar': { count: 1, hp: 1, damage: 1 },
+  'Difícil': { count: 1.5, hp: 1.3, damage: 1.25 },
+} as const
+
+export type DifficultyId = keyof typeof DIFFICULTY
+
+export const difficultyOf = (id: string | undefined) => DIFFICULTY[id as DifficultyId] ?? DIFFICULTY['Estándar']
+
 /** Construir con clic/toque: casilla de tu base a esta distancia (en casillas) como máximo. */
 export const BUILD_REACH = 4.5
 

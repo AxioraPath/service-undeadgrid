@@ -1,5 +1,5 @@
 import { gameInputSchema } from '../contracts/game';
-import { ARMORY, BODY, MAP_H, MAP_W, PLAYER, PLAYER_START, STRUCTURES, TURRET, WEAPONS } from './constants';
+import { ARMORY, BODY, MAP_H, MAP_W, PLAYER, PLAYER_START, STRUCTURES, TURRET, WEAPONS, perksOf } from './constants';
 import { createMatch, frontTile, playerInOwnBase, previewBuild, quantizeFacing, sanitizeAim, step, type Command } from './engine';
 import { encodeState } from './snapshot';
 import { applyDamage, clamp, heal, lerp, zombieCount, zombieDamage, zombieHp } from './formulas';
@@ -93,7 +93,7 @@ describe('Simulación', () => {
     const p = s.players[0];
     const y0 = p.y;
     for (let i = 0; i < 6; i++) step(s, { a: { up: false, down: true, left: false, right: false, action: false } }, [], 1 / 30);
-    expect(p.y - y0).toBeCloseTo((PLAYER.speed * 6) / 30, 5);
+    expect(p.y - y0).toBeCloseTo((PLAYER.speed * perksOf('explorador').speed * 6) / 30, 5);
   });
 });
 
@@ -295,7 +295,8 @@ describe('Mouse aiming', () => {
 
 describe('Combate nuevo: disparo, construcción, caja de armamento y torretas', () => {
   const idle = { up: false, down: false, left: false, right: false, action: false };
-  const one = () => createMatch({ seed: 5, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'explorador' }] });
+  // Superviviente sin ventajas, para medir las reglas base.
+  const one = () => createMatch({ seed: 5, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
   const run = (s: ReturnType<typeof one>, input: object, ticks: number, cmds: { playerId: string; cmd: Command }[] = []) => {
     for (let i = 0; i < ticks; i++) step(s, { a: { ...idle, ...input } }, i === 0 ? cmds : [], 1 / 30);
   };
@@ -370,5 +371,48 @@ describe('Combate nuevo: disparo, construcción, caja de armamento y torretas', 
     run(s, { up: true }, 30);
     expect(p.y + BODY.top).toBeGreaterThanOrEqual(ty + 1 - 1e-6);
     expect(p.y + BODY.top).toBeLessThan(ty + 1.05);
+  });
+});
+
+describe('supervivientes y dificultad', () => {
+  const two = (a: string, b: string, difficulty?: string) =>
+    createMatch({
+      seed: 7,
+      difficulty,
+      players: [
+        { id: 'a', slot: 1, name: 'A', survivor: a },
+        { id: 'b', slot: 2, name: 'B', survivor: b },
+      ],
+    });
+
+  it('la mecánica empieza con más materiales y el explorador con más cartuchos', () => {
+    const s = two('mecanica', 'explorador');
+    const [m, e] = s.players;
+    expect(m.wood).toBe(PLAYER_START.wood + 12);
+    expect(m.metal).toBe(PLAYER_START.metal + 4);
+    expect(e.shells).toBe(PLAYER_START.shells + 8);
+    expect(e.wood).toBe(PLAYER_START.wood);
+  });
+
+  it('el explorador camina más rápido', () => {
+    const s = two('explorador', 'mecanica');
+    const [e, m] = s.players;
+    const e0 = e.y;
+    const m0 = m.y;
+    for (let i = 0; i < 10; i++) step(s, { a: { up: false, down: true, left: false, right: false, action: false }, b: { up: true, down: false, left: false, right: false, action: false } }, [], 1 / 30);
+    expect(Math.abs(e.y - e0)).toBeGreaterThan(Math.abs(m.y - m0) * 1.1);
+  });
+
+  it('en Difícil salen más zombis y con más vida', () => {
+    const normal = two('explorador', 'mecanica');
+    const hard = two('explorador', 'mecanica', 'Difícil');
+    const toWave = (s: ReturnType<typeof two>) => {
+      for (let t = 0; t < 61 * 30; t++) step(s, {}, [], 1 / 30);
+    };
+    toWave(normal);
+    toWave(hard);
+    const total = (s: ReturnType<typeof two>) => s.zombies.length + s.spawn.remaining;
+    expect(total(hard)).toBeGreaterThan(total(normal));
+    expect(hard.zombies[0].maxHp).toBeGreaterThan(normal.zombies[0].maxHp);
   });
 });

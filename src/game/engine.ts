@@ -4,6 +4,8 @@ import {
   BUILD_REACH,
   BULLET,
   PLAYER_START,
+  difficultyOf,
+  perksOf,
   TICK_RATE,
   TURRET,
   CORE_HP,
@@ -191,6 +193,8 @@ export interface MatchState {
   /** HP of the ENEMY core removed by each slot's player bullets (stat only, never read by the simulation). */
   coreDamageDealt: Record<Slot, number>
   crates: Record<Slot, Stock>
+  /** Multiplicadores de la dificultad elegida en la sala. */
+  difficulty: { count: number; hp: number; damage: number }
   armory: Armory
   /** Mapas de distancia (zombis): se recalculan cada medio segundo por objetivo. */
   flows: Map<string, { dist: Float32Array; at: number }>
@@ -206,6 +210,8 @@ export interface MatchState {
 export interface CreateMatchOptions {
   seed: number
   players: { id: string; slot: Slot; name: string; survivor: string }[]
+  /** 'Estándar' (por defecto) o 'Difícil'. */
+  difficulty?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -220,7 +226,7 @@ function spawnPoint(map: GameMapData, slot: Slot): Point {
   return slot === 1 ? { x: c.x + 0.5, y: c.y + 2.5 } : { x: c.x + 1.5, y: c.y - 0.5 }
 }
 
-export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
+export function createMatch({ seed, players, difficulty }: CreateMatchOptions): MatchState {
   const map = generateMap(seed)
   return {
     map,
@@ -229,6 +235,7 @@ export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
     phaseIndex: 0,
     players: players.map((p) => {
       const sp = spawnPoint(map, p.slot)
+      const extra = perksOf(p.survivor).start
       return {
         ...p,
         x: sp.x,
@@ -243,7 +250,10 @@ export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
         respawnAt: null,
         weapon: 'pistol',
         build: 'wall',
-        ...PLAYER_START,
+        wood: PLAYER_START.wood + (extra.wood ?? 0),
+        metal: PLAYER_START.metal + (extra.metal ?? 0),
+        medkits: PLAYER_START.medkits + (extra.medkits ?? 0),
+        shells: PLAYER_START.shells + (extra.shells ?? 0),
         smgAmmo: 0,
         turrets: 0,
         kills: 0,
@@ -264,6 +274,7 @@ export function createMatch({ seed, players }: CreateMatchOptions): MatchState {
     cores: { 1: { slot: 1, hp: CORE_HP }, 2: { slot: 2, hp: CORE_HP } },
     coreDamageDealt: { 1: 0, 2: 0 },
     crates: { 1: { ...CRATE_START }, 2: { ...CRATE_START } },
+    difficulty: { ...difficultyOf(difficulty) },
     armory: { x: map.armory.x, y: map.armory.y, available: false, progress: {}, openedBy: null },
     flows: new Map(),
     spawn: { remaining: 0, nextAt: 0, interval: 1, wave: 0, cursor: 0 },
@@ -453,7 +464,7 @@ function applyBuild(s: MatchState, p: Player, pv: BuildPreview) {
   const repaired = !!st && st.type !== 'trap' && st.type !== 'turret' && st.hp < st.maxHp
   if (repaired) {
     p.wood -= STRUCTURES.repair.wood
-    st.hp = Math.min(st.maxHp, st.hp + STRUCTURES.repair.hp)
+    st.hp = Math.min(st.maxHp, st.hp + STRUCTURES.repair.hp * perksOf(p.survivor).repair)
   } else if (st?.type === 'wood') {
     p.metal -= STRUCTURES.reinforced.metal
     st.type = 'reinforced'
@@ -579,7 +590,8 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
       p.dirY = my
     }
     // Velocidad máxima validada por el servidor: no depende de los FPS del cliente.
-    moveEntity(s, p, mx * PLAYER.speed * dt, my * PLAYER.speed * dt, PLAYER.radius)
+    const speed = PLAYER.speed * perksOf(p.survivor).speed
+    moveEntity(s, p, mx * speed * dt, my * speed * dt, PLAYER.radius)
   }
 
   p.fireCd = Math.max(0, p.fireCd - dt)
@@ -674,8 +686,8 @@ function spawnZombies(s: MatchState) {
     const point = s.map.spawns[sp.cursor++ % s.map.spawns.length]
     const x = point.x + 0.5 + (s.rng.next() - 0.5) * 0.6
     const y = point.y + 0.5 + (s.rng.next() - 0.5) * 0.6
-    const hp = zombieHp(sp.wave)
-    s.zombies.push({ id: s.nextId++, x, y, px: x, py: y, hp, maxHp: hp, damage: zombieDamage(sp.wave), attackCd: 0, retargetAt: 0, trapAcc: 0, target: null, kind: zombieKindFor(sp.wave, sp.cursor), attackAt: -1, hurtAt: -1 })
+    const hp = Math.round(zombieHp(sp.wave) * s.difficulty.hp)
+    s.zombies.push({ id: s.nextId++, x, y, px: x, py: y, hp, maxHp: hp, damage: zombieDamage(sp.wave) * s.difficulty.damage, attackCd: 0, retargetAt: 0, trapAcc: 0, target: null, kind: zombieKindFor(sp.wave, sp.cursor), attackAt: -1, hurtAt: -1 })
     sp.remaining--
     sp.nextAt += sp.interval
   }
@@ -1039,7 +1051,7 @@ function updatePhase(s: MatchState) {
       const crate = s.crates[slot]
       for (const k of Object.keys(CRATE_REFILL) as (keyof Stock)[]) crate[k] += CRATE_REFILL[k]
     }
-    const count = zombieCount(ph.wave)
+    const count = Math.round(zombieCount(ph.wave) * s.difficulty.count)
     s.spawn = {
       remaining: s.spawn.remaining + count,
       nextAt: s.time,

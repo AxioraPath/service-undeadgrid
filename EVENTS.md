@@ -123,7 +123,15 @@ Solo el **host** y solo en `lobby`.
 
 ### `lobby:start`
 El **host** inicia la partida. Requiere sala llena (2), ambos conectados y listos.
-Transiciona `lobby → selection`.
+El superviviente ya se eligió en el lobby (`lobby:selectSurvivor`), así que pasa
+directo a `preparation` (lobby → selection → preparation en el mismo paso) y el combate
+arranca tras la cuenta regresiva. Si alguien sale mientras la sala está en `selection`,
+la sala vuelve a `lobby` y se quitan los "listo".
+
+La dificultad escala los zombis: `Estándar` ×1; `Difícil` ×1.5 cantidad, ×1.3 vida,
+×1.25 daño. Cada superviviente tiene una ventaja pequeña: Explorador camina 15 % más
+rápido y empieza con +8 cartuchos; Mecánica empieza con +12 madera y +4 metal y repara
+el doble.
 
 - **Payload:** *(ninguno)* · **Ack:** `Ack<RoomSnapshot>` · **Push:** `lobby:state`
 - **Errores:** `NOT_HOST`, `BAD_STATE`.
