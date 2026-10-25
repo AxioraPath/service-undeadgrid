@@ -182,6 +182,30 @@ describe('RoomService (flujo 1v1)', () => {
     ).toThrow(/combate/i);
   });
 
+  it('la misma cuenta no ocupa dos asientos: con la pestaña abierta se rechaza la segunda', () => {
+    const { room } = svc.create({ name: 'Ana', socketId: 's1', userId: 'u-ana' });
+    expect(() => svc.join({ code: room.code, name: 'Ana', socketId: 's1b', userId: 'u-ana' })).toThrow(/otra pestaña/i);
+    expect(room.players.size).toBe(1);
+    // Otra cuenta sí entra.
+    svc.join({ code: room.code, name: 'Bob', socketId: 's2', userId: 'u-bob' });
+    expect(room.players.size).toBe(2);
+  });
+
+  it('si la cuenta estaba desconectada recupera su mismo asiento (también a mitad de partida)', () => {
+    const { room } = svc.create({ name: 'Ana', socketId: 's1', userId: 'u-ana' });
+    svc.join({ code: room.code, name: 'Bob', socketId: 's2', userId: 'u-bob' });
+    svc.setReady(room.code, 's1', true);
+    svc.setReady(room.code, 's2', true);
+    svc.start(room.code, 's1');
+    svc.beginCombat(room);
+    svc.handleDisconnect('s2');
+    const again = svc.join({ code: room.code, name: 'Bob', socketId: 's2b', userId: 'u-bob' });
+    expect(again.reconnected).toBe(true);
+    expect(again.player.slot).toBe(2);
+    expect(room.players.size).toBe(2);
+    expect(room.status).toBe('combat');
+  });
+
   it('reconecta a un asiento desconectado durante el combate', () => {
     const { room } = svc.create({ name: 'Ana', socketId: 's1' });
     svc.join({ code: room.code, name: 'Bob', socketId: 's2' });

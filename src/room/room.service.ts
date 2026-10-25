@@ -118,6 +118,23 @@ export class RoomService {
       }
     }
 
+    // Una cuenta ocupa un solo asiento: abrir el mismo link en otra pestaña no crea un jugador duplicado.
+    if (params.userId) {
+      const same = [...room.players.values()].find((p) => p.userId === params.userId);
+      if (same) {
+        if (same.connected) {
+          throw new DomainError(
+            ErrorCode.ALREADY_IN_ROOM,
+            'Ya estás en esta sala en otra pestaña o dispositivo',
+          );
+        }
+        // Estaba desconectada (cerró la pestaña, cambió de equipo): recupera su mismo asiento.
+        same.markReconnected(params.socketId);
+        this.logger.log(`Reconexión por cuenta ${room.code} slot ${same.slot} "${same.name}"`);
+        return { room, player: same, reconnected: true };
+      }
+    }
+
     if (room.status !== 'lobby') {
       throw new DomainError(
         ErrorCode.BAD_STATE,
