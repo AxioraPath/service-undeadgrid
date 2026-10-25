@@ -36,15 +36,46 @@ export const PLAYER = {
   respawnS: 5,
 }
 
-export type WeaponId = 'pistol' | 'shotgun' | 'smg'
+export type WeaponId = 'pistol' | 'shotgun' | 'smg' | 'sniper' | 'rocket'
+/** Armas pesadas: solo salen de la caja de armamento y gastan su propia munición (heavyAmmo). */
+export type HeavyId = 'smg' | 'sniper' | 'rocket'
 
-export const WEAPONS: Record<WeaponId, { name: string; damage: number; rate: number; pellets: number; spread: number; usesShell: boolean }> = {
-  pistol: { name: 'Pistola', damage: 15, rate: 3, pellets: 1, spread: 0, usesShell: false },
-  shotgun: { name: 'Escopeta', damage: 10, rate: 1, pellets: 5, spread: 0.32, usesShell: true },
-  // Solo sale de la caja de armamento del centro; gasta balas propias (smgAmmo).
-  smg: { name: 'Metralleta', damage: 8, rate: 8, pellets: 1, spread: 0, usesShell: false },
+/** Tipo de proyectil (también lo usa el cliente para dibujarlo). */
+export type ProjectileKind = 'bullet' | 'sniper' | 'rocket'
+
+export interface WeaponDef {
+  name: string
+  damage: number
+  /** Disparos por segundo. */
+  rate: number
+  pellets: number
+  spread: number
+  usesShell: boolean
+  /** Velocidad y alcance del proyectil (casillas/s y casillas). */
+  speed: number
+  range: number
+  projectile: ProjectileKind
+  /** Cuántos zombis atraviesa antes de detenerse (1 = el primero que toca). */
+  pierce: number
 }
 
+export const WEAPONS: Record<WeaponId, WeaponDef> = {
+  pistol: { name: 'Pistola', damage: 15, rate: 3, pellets: 1, spread: 0, usesShell: false, speed: 16, range: 9, projectile: 'bullet', pierce: 1 },
+  shotgun: { name: 'Escopeta', damage: 10, rate: 1, pellets: 5, spread: 0.32, usesShell: true, speed: 16, range: 9, projectile: 'bullet', pierce: 1 },
+  smg: { name: 'Ametralladora', damage: 8, rate: 8, pellets: 1, spread: 0, usesShell: false, speed: 16, range: 9, projectile: 'bullet', pierce: 1 },
+  // Sniper: lento pero de mucho daño y largo alcance; atraviesa hasta 3 zombis.
+  sniper: { name: 'Sniper', damage: 70, rate: 0.9, pellets: 1, spread: 0, usesShell: false, speed: 30, range: 18, projectile: 'sniper', pierce: 3 },
+  // Lanzacohetes: el cohete explota al chocar o al llegar a su alcance (ver ROCKET).
+  rocket: { name: 'Lanzacohetes', damage: 40, rate: 0.7, pellets: 1, spread: 0, usesShell: false, speed: 10, range: 11, projectile: 'rocket', pierce: 1 },
+}
+
+/** Explosión del cohete: daña a todo lo enemigo dentro del radio (casillas). */
+export const ROCKET = { radius: 1.6, damage: 55 }
+
+/** Cuchillo automático: con un zombi a esta distancia se ataca cuerpo a cuerpo y no se gasta munición. */
+export const KNIFE = { range: 0.95, damage: 25, cooldownS: 0.45, impactS: 0.1 }
+
+/** Proyectil por defecto (torretas). */
 export const BULLET = { speed: 16, range: 9 }
 
 export const ZOMBIE = {
@@ -93,15 +124,27 @@ export interface SurvivorPerks {
   start: Partial<Stock>
   /** Multiplica la vida que recupera una pared al repararla. */
   repair: number
+  /** Multiplica el daño de sus disparos y su cuchillo. */
+  damage: number
+  /** Multiplica lo que cura un botiquín. */
+  heal: number
+  /** Multiplica la vida de las paredes que construye. */
+  wallHp: number
 }
 
-const NO_PERKS: SurvivorPerks = { speed: 1, start: {}, repair: 1 }
+const NO_PERKS: SurvivorPerks = { speed: 1, start: {}, repair: 1, damage: 1, heal: 1, wallHp: 1 }
 
 export const SURVIVOR_PERKS: Record<string, SurvivorPerks> = {
   // Explorador: más rápido y con más cartuchos para salir a pelear.
-  explorador: { speed: 1.15, start: { shells: 8 }, repair: 1 },
+  explorador: { ...NO_PERKS, speed: 1.15, start: { shells: 8 } },
   // Mecánica: más materiales al empezar y repara el doble.
-  mecanica: { speed: 1, start: { wood: 12, metal: 4 }, repair: 2 },
+  mecanica: { ...NO_PERKS, start: { wood: 12, metal: 4 }, repair: 2 },
+  // Militar: 15 % más daño con todas sus armas.
+  militar: { ...NO_PERKS, damage: 1.15 },
+  // Médica: 2 botiquines extra y cada uno cura 50 % más.
+  medica: { ...NO_PERKS, start: { medkits: 2 }, heal: 1.5 },
+  // Obrero: +8 madera y sus paredes aguantan 50 % más.
+  obrero: { ...NO_PERKS, start: { wood: 8 }, wallHp: 1.5 },
 }
 
 export const perksOf = (survivor: string): SurvivorPerks => SURVIVOR_PERKS[survivor] ?? NO_PERKS
@@ -127,7 +170,14 @@ export const BUILD_REACH = 4.5
 export const BODY = { top: -0.1, bottom: 0.34 }
 
 /** Caja de armamento del centro: hay que quedarse junto a ella sin recibir daño para abrirla. */
-export const ARMORY = { openS: 5, radius: 1.6, smgAmmo: 120, turrets: 1, medkits: 1 }
+export const ARMORY = { openS: 5, radius: 1.6, turrets: 1, medkits: 1 }
+
+/** Arma pesada que trae la caja en cada oleada (oleada 1, 2 y horda final) y su munición. */
+export const ARMORY_LOOT: Record<number, { weapon: HeavyId; ammo: number }> = {
+  1: { weapon: 'smg', ammo: 120 },
+  2: { weapon: 'sniper', ammo: 10 },
+  3: { weapon: 'rocket', ammo: 5 },
+}
 
 /** Torreta: equilibrada, fácil de destruir, dispara lento y recarga. */
 export const TURRET = { hp: 120, range: 6, damage: 9, fireInterval: 0.9, magazine: 8, reloadS: 4 }

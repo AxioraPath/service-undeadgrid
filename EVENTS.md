@@ -324,3 +324,19 @@ Si la partida acaba por abandono el payload se re-emite con los mismos campos.
   antiguas (`lobbyMaxAgeMs`).
 
 Todos estos valores están centralizados y documentados en `src/config/game.config.ts`.
+
+
+## Armas, caja de armamento y mapas (expansión)
+
+- **Cuchillo automático:** al atacar (`fire` o `action` fuera de la base) con un zombi a ≤ 0.95 casillas se usa el
+  cuchillo: 25 de daño, sin gastar munición, un solo golpe 0.1 s después (se vuelve a comprobar la distancia).
+  Evento `knife`; el jugador lleva `knifeAt`, `knifeDirX`, `knifeDirY`.
+- **Caja del centro:** da un arma pesada según la oleada (`smg` 120 balas, `sniper` 10, `rocket` 5), una torreta y un
+  botiquín. `armoryReady` / `armoryOpened` incluyen `weapon`. El jugador lleva `heavy` y `heavyAmmo`; la ranura 6 la equipa.
+- **Sniper:** 70 de daño, atraviesa hasta 3 zombis. **Cohete:** explota (radio 1.6, 55 de daño) contra zombis y, en
+  combate, rival, sus estructuras y su núcleo. Evento `explosion`.
+- `bullets`: `[id, x, y, vx, vy, tipo(0 bala | 1 sniper | 2 cohete)]`. `turrets`: se agrega `disparando (0/1)`.
+- **Mapas:** `game:sync` incluye `map.theme` (`ciudad` | `industrial`). `distrito-industrial` genera canales, tren
+  (`train`, suelo `RAIL = 8`), estructuras industriales y un helicóptero derribado.
+- **Supervivientes:** explorador, mecánica, militar (+15 % daño), médica (+2 botiquines, curan 50 % más) y obrero
+  (+8 madera, paredes con 50 % más de vida).

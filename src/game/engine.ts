@@ -1,6 +1,10 @@
 import {
   ARMORY,
+  ARMORY_LOOT,
   BODY,
+  KNIFE,
+  MEDKIT_HEAL,
+  ROCKET,
   BUILD_REACH,
   BULLET,
   PLAYER_START,
@@ -19,12 +23,14 @@ import {
   WEAPONS,
   ZOMBIE,
   type BuildId,
+  type HeavyId,
+  type ProjectileKind,
   type Slot,
   type Stock,
   type WeaponId,
 } from './constants'
 import { applyDamage, heal, zombieCount, zombieDamage, zombieHp } from './formulas'
-import { blocksBullets, generateMap, inRect, isSolidTileKind, tileAt, tileIndex, Tile, type GameMapData, type Point } from './mapgen'
+import { blocksBullets, generateMap, inRect, mapThemeOf, isSolidTileKind, tileAt, tileIndex, Tile, type GameMapData, type Point } from './mapgen'
 import { createRng, type Rng } from './rng'
 
 // ---------------------------------------------------------------------------
@@ -74,8 +80,9 @@ export interface Player {
   metal: number
   medkits: number
   shells: number
-  /** Balas de la metralleta (solo de la caja de armamento). */
-  smgAmmo: number
+  /** Arma pesada de la caja de armamento (ametralladora, sniper o lanzacohetes) y su munición. */
+  heavy: HeavyId | null
+  heavyAmmo: number
   /** Torretas listas para colocar (solo de la caja de armamento). */
   turrets: number
   kills: number
@@ -91,6 +98,10 @@ export interface Player {
   /** Solo visual: momento del último disparo y del último daño (tiempo de partida). */
   shotAt: number
   hurtAt: number
+  /** Cuchillo: golpe pendiente (se aplica al llegar a `at` si el zombi sigue cerca), último ataque y hacia dónde. */
+  knife: { target: number; at: number } | null
+  knifeAt: number
+  knifeDir: { x: number; y: number }
 }
 
 export type ZombieKind = 'normal' | 'fast' | 'tank'
@@ -126,6 +137,14 @@ export interface Bullet {
   vy: number
   damage: number
   traveled: number
+  kind: ProjectileKind
+  speed: number
+  range: number
+  /** Zombis que aún puede atravesar y los que ya tocó. */
+  pierce: number
+  hits: number[]
+  /** Daño de la explosión (solo cohetes). */
+  splash: number
 }
 
 export type WallOrient = 'h' | 'v'
@@ -143,6 +162,8 @@ export interface Structure {
   reloadUntil?: number
   aimX?: number
   aimY?: number
+  /** Solo visual: último disparo de la torreta. */
+  shotAt?: number
 }
 
 /** Caja de armamento del centro del mapa. */
@@ -162,6 +183,8 @@ export interface Core {
 
 export type GameEvent =
   | { type: 'shot'; x: number; y: number; dirX: number; dirY: number; slot: Slot }
+  | { type: 'explosion'; x: number; y: number }
+  | { type: 'knife'; slot: Slot; x: number; y: number }
   | { type: 'hit'; x: number; y: number }
   | { type: 'zombieDied'; x: number; y: number; kind: ZombieKind }
   | { type: 'playerDied'; slot: Slot; x: number; y: number }
@@ -169,8 +192,8 @@ export type GameEvent =
   | { type: 'rejected'; slot: Slot; reason: string }
   | { type: 'phase'; label: string }
   | { type: 'coreHit'; slot: Slot }
-  | { type: 'armoryOpened'; slot: Slot }
-  | { type: 'armoryReady' }
+  | { type: 'armoryOpened'; slot: Slot; weapon: HeavyId }
+  | { type: 'armoryReady'; weapon: HeavyId }
 
 export interface MatchResult {
   winner: Slot | 0 // 0 = empate
@@ -212,6 +235,8 @@ export interface CreateMatchOptions {
   players: { id: string; slot: Slot; name: string; survivor: string }[]
   /** 'Estándar' (por defecto) o 'Difícil'. */
   difficulty?: string
+  /** Mapa elegido en la sala (define el tema del generador). */
+  mapId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -226,8 +251,8 @@ function spawnPoint(map: GameMapData, slot: Slot): Point {
   return slot === 1 ? { x: c.x + 0.5, y: c.y + 2.5 } : { x: c.x + 1.5, y: c.y - 0.5 }
 }
 
-export function createMatch({ seed, players, difficulty }: CreateMatchOptions): MatchState {
-  const map = generateMap(seed)
+export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOptions): MatchState {
+  const map = generateMap(seed, mapThemeOf(mapId))
   return {
     map,
     rng: createRng(seed ^ 0x9e3779b9),
@@ -254,7 +279,11 @@ export function createMatch({ seed, players, difficulty }: CreateMatchOptions): 
         metal: PLAYER_START.metal + (extra.metal ?? 0),
         medkits: PLAYER_START.medkits + (extra.medkits ?? 0),
         shells: PLAYER_START.shells + (extra.shells ?? 0),
-        smgAmmo: 0,
+        heavy: null,
+        heavyAmmo: 0,
+        knife: null,
+        knifeAt: -1,
+        knifeDir: { x: 0, y: 1 },
         turrets: 0,
         kills: 0,
         zombieKills: 0,
@@ -416,8 +445,8 @@ function applyCommand(s: MatchState, p: Player, cmd: Command) {
     else if (cmd.slot === 4) p.build = 'wall'
     else if (cmd.slot === 5) p.build = 'trap'
     else if (cmd.slot === 6) {
-      if (p.smgAmmo > 0) p.weapon = 'smg'
-      else s.events.push({ type: 'rejected', slot: p.slot, reason: 'Sin metralleta: ábrela en la caja del centro' })
+      if (p.heavy && p.heavyAmmo > 0) p.weapon = p.heavy
+      else s.events.push({ type: 'rejected', slot: p.slot, reason: 'Sin arma pesada: ábrela en la caja del centro' })
     } else if (cmd.slot === 7) {
       if (p.turrets > 0) p.build = 'turret'
       else s.events.push({ type: 'rejected', slot: p.slot, reason: 'Sin torretas: están en la caja del centro' })
@@ -427,7 +456,7 @@ function applyCommand(s: MatchState, p: Player, cmd: Command) {
       else if (p.hp >= PLAYER.maxHp) s.events.push({ type: 'rejected', slot: p.slot, reason: 'Tu vida está llena' })
       else {
         p.medkits--
-        p.hp = heal(p.hp)
+        p.hp = heal(p.hp, MEDKIT_HEAL * perksOf(p.survivor).heal)
       }
     }
     return
@@ -468,15 +497,17 @@ function applyBuild(s: MatchState, p: Player, pv: BuildPreview) {
   } else if (st?.type === 'wood') {
     p.metal -= STRUCTURES.reinforced.metal
     st.type = 'reinforced'
-    st.hp += STRUCTURES.reinforced.hp - st.maxHp
-    st.maxHp = STRUCTURES.reinforced.hp
+    const maxHp = Math.round(STRUCTURES.reinforced.hp * perksOf(p.survivor).wallHp)
+    st.hp += maxHp - st.maxHp
+    st.maxHp = maxHp
   } else if (p.build === 'turret') {
     p.turrets--
     s.structures.set(key, { type: 'turret', hp: TURRET.hp, maxHp: TURRET.hp, owner: p.slot, orient: 'h', ammo: TURRET.magazine, cd: 0, reloadUntil: 0, aimX: 0, aimY: 1 })
     if (p.turrets <= 0) p.build = 'wall'
   } else if (p.build === 'wall') {
     p.wood -= STRUCTURES.woodWall.wood
-    s.structures.set(key, { type: 'wood', hp: STRUCTURES.woodWall.hp, maxHp: STRUCTURES.woodWall.hp, owner: p.slot, orient: pv.orient })
+    const hp = Math.round(STRUCTURES.woodWall.hp * perksOf(p.survivor).wallHp)
+    s.structures.set(key, { type: 'wood', hp, maxHp: hp, owner: p.slot, orient: pv.orient })
   } else {
     p.metal -= STRUCTURES.trap.metal
     s.structures.set(key, { type: 'trap', hp: 1, maxHp: 1, owner: p.slot, orient: 'h' })
@@ -507,15 +538,17 @@ export function quantizeFacing(x: number, y: number): { x: number; y: number } {
   return { x: r(Math.cos(a)), y: r(Math.sin(a)) }
 }
 
+const isHeavy = (w: string): w is HeavyId => w === 'smg' || w === 'sniper' || w === 'rocket'
+
 function shoot(s: MatchState, p: Player) {
   const w = WEAPONS[p.weapon]
-  if (p.weapon === 'smg') {
-    if (p.smgAmmo <= 0) {
+  if (isHeavy(p.weapon)) {
+    if (p.heavy !== p.weapon || p.heavyAmmo <= 0) {
       p.weapon = 'pistol'
-      s.events.push({ type: 'rejected', slot: p.slot, reason: 'Sin balas de metralleta' })
+      s.events.push({ type: 'rejected', slot: p.slot, reason: `Sin munición de ${w.name.toLowerCase()}` })
       return
     }
-    p.smgAmmo--
+    p.heavyAmmo--
   }
   if (w.usesShell) {
     if (p.shells <= 0) {
@@ -527,18 +560,70 @@ function shoot(s: MatchState, p: Player) {
   }
   p.fireCd = 1 / w.rate
   p.shotAt = s.time
+  const dmg = perksOf(p.survivor).damage
   // Shots follow the continuous aim when present; otherwise the (quantized) facing, as before.
   const len = Math.hypot(p.dirX, p.dirY) || 1
   const base = p.aim ? Math.atan2(p.aim.y, p.aim.x) : Math.atan2(p.dirY / len, p.dirX / len)
   for (let i = 0; i < w.pellets; i++) {
     const a = w.pellets === 1 ? base : base - w.spread / 2 + (w.spread * i) / (w.pellets - 1)
-    const vx = Math.cos(a) * BULLET.speed
-    const vy = Math.sin(a) * BULLET.speed
+    const vx = Math.cos(a) * w.speed
+    const vy = Math.sin(a) * w.speed
     const x = p.x + Math.cos(a) * 0.45
     const y = p.y + Math.sin(a) * 0.45
-    s.bullets.push({ id: s.nextId++, owner: p.id, ownerSlot: p.slot, x, y, px: x, py: y, vx, vy, damage: w.damage, traveled: 0 })
+    s.bullets.push({
+      id: s.nextId++, owner: p.id, ownerSlot: p.slot, x, y, px: x, py: y, vx, vy,
+      damage: w.damage * dmg, traveled: 0, kind: w.projectile, speed: w.speed, range: w.range,
+      pierce: w.pierce, hits: [], splash: w.projectile === 'rocket' ? ROCKET.damage * dmg : 0,
+    })
   }
   s.events.push({ type: 'shot', x: p.x, y: p.y, dirX: Math.cos(base), dirY: Math.sin(base), slot: p.slot })
+  // Sin munición: vuelve a la pistola y el arma pesada se pierde.
+  if (isHeavy(p.weapon) && p.heavyAmmo <= 0) {
+    p.heavy = null
+    p.weapon = 'pistol'
+  }
+}
+
+/** Zombi vivo más cercano dentro del alcance del cuchillo. */
+function zombieInKnifeRange(s: MatchState, p: Player): Zombie | null {
+  let best: Zombie | null = null
+  let bestD = KNIFE.range
+  for (const z of s.zombies) {
+    const d = Math.hypot(z.x - p.x, z.y - p.y)
+    if (z.hp > 0 && d <= bestD) {
+      best = z
+      bestD = d
+    }
+  }
+  return best
+}
+
+/** Atacar: con un zombi pegado usa el cuchillo (sin gastar munición); si no, dispara el arma en mano. */
+function attack(s: MatchState, p: Player) {
+  if (p.fireCd > 0) return
+  const z = zombieInKnifeRange(s, p)
+  if (!z) {
+    shoot(s, p)
+    return
+  }
+  p.knife = { target: z.id, at: s.time + KNIFE.impactS }
+  p.knifeAt = s.time
+  p.knifeDir = quantizeFacing(z.x - p.x, z.y - p.y)
+  p.fireCd = KNIFE.cooldownS
+  s.events.push({ type: 'knife', slot: p.slot, x: p.x, y: p.y })
+}
+
+/** El golpe del cuchillo se aplica una sola vez, comprobando otra vez la distancia. */
+function resolveKnife(s: MatchState, p: Player) {
+  if (!p.knife || s.time < p.knife.at) return
+  const id = p.knife.target
+  p.knife = null
+  const z = s.zombies.find((o) => o.id === id && o.hp > 0)
+  if (!z || Math.hypot(z.x - p.x, z.y - p.y) > KNIFE.range + 0.15) return
+  z.hp = applyDamage(z.hp, KNIFE.damage * perksOf(p.survivor).damage)
+  z.hurtAt = s.time
+  s.events.push({ type: 'hit', x: z.x, y: z.y })
+  if (z.hp <= 0) rewardZombieKill(s, p.slot)
 }
 
 function killPlayer(s: MatchState, p: Player, killerSlot: Slot | null) {
@@ -562,6 +647,7 @@ function damagePlayer(s: MatchState, p: Player, dmg: number, sourceSlot: Slot | 
 
 function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) {
   if (!p.alive) {
+    p.knife = null
     if (p.respawnAt !== null && s.time >= p.respawnAt) {
       const sp = spawnPoint(s.map, p.slot)
       Object.assign(p, { x: sp.x, y: sp.y, px: sp.x, py: sp.y, hp: PLAYER.maxHp, alive: true, respawnAt: null })
@@ -595,14 +681,15 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
   }
 
   p.fireCd = Math.max(0, p.fireCd - dt)
+  resolveKnife(s, p)
   const pressed = input.action && !p.prevAction
   if (input.fire) {
-    // Clic izquierdo / stick de apuntar: dispara en cualquier lugar, también dentro de tu base.
-    if (p.fireCd <= 0) shoot(s, p)
+    // Clic izquierdo / stick de apuntar: ataca en cualquier lugar, también dentro de tu base.
+    attack(s, p)
   } else if (playerInOwnBase(s, p)) {
     if (pressed) tryBuild(s, p)
-  } else if (input.action && p.fireCd <= 0) {
-    shoot(s, p)
+  } else if (input.action) {
+    attack(s, p)
   }
   p.prevAction = input.action
 }
@@ -619,29 +706,75 @@ function rewardZombieKill(s: MatchState, slot: Slot) {
   if (p.zombieKills % REWARDS.zombiesPerMetal === 0) p.metal++
 }
 
+/** Daña el núcleo enemigo y lo cuenta en la estadística de quien disparó. */
+function hitCore(s: MatchState, ownerSlot: Slot, dmg: number) {
+  const enemy: Slot = ownerSlot === 1 ? 2 : 1
+  if (s.cores[enemy].hp <= 0) return
+  const before = s.cores[enemy].hp
+  s.cores[enemy].hp = applyDamage(before, dmg)
+  s.coreDamageDealt[ownerSlot] += before - s.cores[enemy].hp
+  s.events.push({ type: 'coreHit', slot: enemy })
+}
+
+/** Explosión del cohete: zombis, y en combate también al rival, sus paredes/torretas/trampas y su núcleo. */
+function explode(s: MatchState, b: Bullet) {
+  s.events.push({ type: 'explosion', x: b.x, y: b.y })
+  const r = ROCKET.radius
+  for (const z of s.zombies) {
+    if (z.hp <= 0 || Math.hypot(z.x - b.x, z.y - b.y) > r) continue
+    z.hp = applyDamage(z.hp, b.splash)
+    z.hurtAt = s.time
+    if (z.hp <= 0) rewardZombieKill(s, b.ownerSlot)
+  }
+  if (!isCombat(s)) return
+  for (const p of s.players)
+    if (p.alive && p.slot !== b.ownerSlot && Math.hypot(p.x - b.x, p.y - b.y) <= r) damagePlayer(s, p, b.splash, b.ownerSlot)
+  for (const [key, st] of [...s.structures]) {
+    if (st.owner === b.ownerSlot) continue
+    const cx = (key % s.map.w) + 0.5
+    const cy = Math.floor(key / s.map.w) + 0.5
+    if (Math.hypot(cx - b.x, cy - b.y) > r + 0.3) continue
+    st.hp = applyDamage(st.hp, b.splash)
+    if (st.hp <= 0) s.structures.delete(key)
+  }
+  const enemy: Slot = b.ownerSlot === 1 ? 2 : 1
+  const c = coreCenter(s.map, enemy)
+  if (Math.hypot(c.x - b.x, c.y - b.y) <= r + 1) hitCore(s, b.ownerSlot, b.splash)
+}
+
 function updateBullets(s: MatchState, dt: number) {
   const pvp = isCombat(s)
   s.bullets = s.bullets.filter((b) => {
-    const steps = 2
+    // Sub-pasos de ~0.4 casillas para que las balas rápidas (sniper) no atraviesen nada.
+    const steps = Math.max(2, Math.ceil((b.speed * dt) / 0.4))
     for (let i = 0; i < steps; i++) {
       b.x += (b.vx * dt) / steps
       b.y += (b.vy * dt) / steps
-      b.traveled += (BULLET.speed * dt) / steps
+      b.traveled += (b.speed * dt) / steps
       const tx = Math.floor(b.x)
       const ty = Math.floor(b.y)
 
       for (const z of s.zombies) {
-        if (z.hp > 0 && Math.abs(z.x - b.x) < 0.45 && Math.abs(z.y - b.y) < 0.45) {
+        if (z.hp > 0 && !b.hits.includes(z.id) && Math.abs(z.x - b.x) < 0.45 && Math.abs(z.y - b.y) < 0.45) {
+          if (b.kind === 'rocket') {
+            explode(s, b)
+            return false
+          }
           z.hp = applyDamage(z.hp, b.damage)
           z.hurtAt = s.time
           s.events.push({ type: 'hit', x: b.x, y: b.y })
           if (z.hp <= 0) rewardZombieKill(s, b.ownerSlot)
-          return false
+          b.hits.push(z.id)
+          if (--b.pierce <= 0) return false
         }
       }
       if (pvp) {
         for (const p of s.players) {
           if (p.alive && p.slot !== b.ownerSlot && Math.abs(p.x - b.x) < 0.4 && Math.abs(p.y - b.y) < 0.4) {
+            if (b.kind === 'rocket') {
+              explode(s, b)
+              return false
+            }
             damagePlayer(s, p, b.damage, b.ownerSlot)
             s.events.push({ type: 'hit', x: b.x, y: b.y })
             return false
@@ -652,6 +785,10 @@ function updateBullets(s: MatchState, dt: number) {
       const own = wallAt(s, tx, ty)
       if (own && own.owner === b.ownerSlot && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
       if (bulletBlocked(s, tx, ty)) {
+        if (b.kind === 'rocket') {
+          explode(s, b)
+          return false
+        }
         const wall = wallAt(s, tx, ty)
         if (wall && wall.owner !== b.ownerSlot && pvp) {
           wall.hp = applyDamage(wall.hp, b.damage)
@@ -659,17 +796,14 @@ function updateBullets(s: MatchState, dt: number) {
         }
         const enemy: Slot = b.ownerSlot === 1 ? 2 : 1
         const c = s.map.cores[enemy]
-        if (pvp && s.cores[enemy].hp > 0 && tx >= c.x && tx < c.x + 2 && ty >= c.y && ty < c.y + 2) {
-          const before = s.cores[enemy].hp
-          s.cores[enemy].hp = applyDamage(before, b.damage)
-          s.coreDamageDealt[b.ownerSlot] += before - s.cores[enemy].hp
-          s.events.push({ type: 'coreHit', slot: enemy })
-        }
+        if (pvp && tx >= c.x && tx < c.x + 2 && ty >= c.y && ty < c.y + 2) hitCore(s, b.ownerSlot, b.damage)
         s.events.push({ type: 'hit', x: b.x, y: b.y })
         return false
       }
     }
-    return b.traveled < BULLET.range
+    if (b.traveled < b.range) return true
+    if (b.kind === 'rocket') explode(s, b)
+    return false
   })
 }
 
@@ -958,7 +1092,10 @@ function updateTraps(s: MatchState, dt: number) {
 // Caja de armamento y torretas
 // ---------------------------------------------------------------------------
 
-/** Quien se queda junto a la caja 5 s sin recibir daño se lleva metralleta, torreta y botiquín. */
+/** Arma pesada de la caja según la oleada: ametralladora, sniper y en la horda el lanzacohetes. */
+export const armoryLoot = (s: MatchState) => ARMORY_LOOT[Math.min(3, Math.max(1, currentPhase(s).wave))]
+
+/** Quien se queda junto a la caja 5 s sin recibir daño se lleva el arma pesada, una torreta y un botiquín. */
 function updateArmory(s: MatchState, dt: number) {
   const a = s.armory
   if (!a.available) return
@@ -970,14 +1107,19 @@ function updateArmory(s: MatchState, dt: number) {
     }
     a.progress[p.id] = (a.progress[p.id] ?? 0) + dt
     if (a.progress[p.id] >= ARMORY.openS) {
-      p.smgAmmo += ARMORY.smgAmmo
+      const loot = armoryLoot(s)
+      if (p.heavy === loot.weapon) p.heavyAmmo += loot.ammo
+      else {
+        p.heavy = loot.weapon
+        p.heavyAmmo = loot.ammo
+      }
       p.turrets += ARMORY.turrets
       p.medkits += ARMORY.medkits
-      p.weapon = 'smg'
+      p.weapon = loot.weapon
       a.available = false
       a.openedBy = p.slot
       a.progress = {}
-      s.events.push({ type: 'armoryOpened', slot: p.slot })
+      s.events.push({ type: 'armoryOpened', slot: p.slot, weapon: loot.weapon })
       return
     }
   }
@@ -1019,7 +1161,11 @@ function updateTurrets(s: MatchState, dt: number) {
     const uy = (target.y - cy) / len
     const x = cx + ux * 0.55
     const y = cy + uy * 0.55
-    s.bullets.push({ id: s.nextId++, owner: `turret:${key}`, ownerSlot: st.owner, x, y, px: x, py: y, vx: ux * BULLET.speed, vy: uy * BULLET.speed, damage: TURRET.damage, traveled: 0 })
+    s.bullets.push({
+      id: s.nextId++, owner: `turret:${key}`, ownerSlot: st.owner, x, y, px: x, py: y, vx: ux * BULLET.speed, vy: uy * BULLET.speed,
+      damage: TURRET.damage, traveled: 0, kind: 'bullet', speed: BULLET.speed, range: BULLET.range, pierce: 1, hits: [], splash: 0,
+    })
+    st.shotAt = s.time
     s.events.push({ type: 'shot', x: cx, y: cy, dirX: ux, dirY: uy, slot: st.owner })
     st.aimX = ux
     st.aimY = uy
@@ -1046,7 +1192,7 @@ function updatePhase(s: MatchState) {
     s.armory.available = true
     s.armory.openedBy = null
     s.armory.progress = {}
-    s.events.push({ type: 'armoryReady' })
+    s.events.push({ type: 'armoryReady', weapon: armoryLoot(s).weapon })
     for (const slot of [1, 2] as Slot[]) {
       const crate = s.crates[slot]
       for (const k of Object.keys(CRATE_REFILL) as (keyof Stock)[]) crate[k] += CRATE_REFILL[k]

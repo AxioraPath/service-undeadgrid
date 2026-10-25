@@ -38,7 +38,7 @@ export const LIMITS = {
 } as const;
 
 /** Supervivientes desbloqueados (espeja UNLOCKED_SURVIVORS de catalog.ts). */
-export const UNLOCKED_SURVIVORS = ['explorador', 'mecanica'] as const;
+export const UNLOCKED_SURVIVORS = ['explorador', 'mecanica', 'militar', 'medica', 'obrero'] as const;
 export type SurvivorId = string;
 export const DEFAULT_SURVIVOR = UNLOCKED_SURVIVORS[0];
 

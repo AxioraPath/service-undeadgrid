@@ -1,9 +1,9 @@
 import { gameInputSchema } from '../contracts/game';
-import { ARMORY, BODY, MAP_H, MAP_W, PLAYER, PLAYER_START, STRUCTURES, TURRET, WEAPONS, perksOf } from './constants';
+import { ARMORY, ARMORY_LOOT, BODY, KNIFE, ROCKET, SURVIVOR_PERKS, MAP_H, MAP_W, PLAYER, PLAYER_START, STRUCTURES, TURRET, WEAPONS, perksOf } from './constants';
 import { createMatch, frontTile, playerInOwnBase, previewBuild, quantizeFacing, sanitizeAim, step, type Command } from './engine';
 import { encodeState } from './snapshot';
 import { applyDamage, clamp, heal, lerp, zombieCount, zombieDamage, zombieHp } from './formulas';
-import { generateMap, Ground, isMapReachable, Tile } from './mapgen';
+import { BUILDINGS, generateMap, Ground, isMapReachable, mapThemeOf, Tile } from './mapgen';
 
 /** Pruebas unitarias de las reglas del juego (matriz del PDF: mapa, daño, Zod, interpolación). */
 describe('Generador de mapas', () => {
@@ -336,9 +336,10 @@ describe('Combate nuevo: disparo, construcción, caja de armamento y torretas', 
     expect(s.armory.available).toBe(true);
     Object.assign(p, { x: s.armory.x, y: s.armory.y + 0.5 });
     run(s, {}, 30 * 4);
-    expect(p.smgAmmo).toBe(0);
+    expect(p.heavy).toBe(null);
     run(s, {}, 30 * 1 + 2);
-    expect(p.smgAmmo).toBe(ARMORY.smgAmmo);
+    expect(p.heavy).toBe('smg');
+    expect(p.heavyAmmo).toBe(ARMORY_LOOT[1].ammo);
     expect(p.turrets).toBe(1);
     expect(p.weapon).toBe('smg');
     expect(s.armory.available).toBe(false);
@@ -414,5 +415,142 @@ describe('supervivientes y dificultad', () => {
     const total = (s: ReturnType<typeof two>) => s.zombies.length + s.spawn.remaining;
     expect(total(hard)).toBeGreaterThan(total(normal));
     expect(hard.zombies[0].maxHp).toBeGreaterThan(normal.zombies[0].maxHp);
+  });
+});
+
+describe('armas nuevas: cuchillo, sniper y lanzacohetes', () => {
+  const idle = { up: false, down: false, left: false, right: false, action: false };
+  const setup = () => {
+    const s = createMatch({ seed: 11, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
+    const p = s.players[0];
+    // Fuera de la base, en una casilla libre del centro.
+    Object.assign(p, { x: s.map.armory.x + 0.5, y: s.map.armory.y + 1.5 });
+    return { s, p };
+  };
+  const zombie = (s: ReturnType<typeof setup>['s'], x: number, y: number, hp = 200) => {
+    const z = { id: s.nextId++, x, y, px: x, py: y, hp, maxHp: hp, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, attackAt: -1, hurtAt: -1, target: null };
+    s.zombies.push(z);
+    return z;
+  };
+  const tick = (s: ReturnType<typeof setup>['s'], input: object, n = 1) => {
+    for (let i = 0; i < n; i++) step(s, { a: { ...idle, ...input } }, [], 1 / 30);
+  };
+
+  it('con un zombi pegado usa el cuchillo: no dispara ni gasta munición y golpea una sola vez', () => {
+    const { s, p } = setup();
+    p.weapon = 'shotgun';
+    const shells = p.shells;
+    const z = zombie(s, p.x + 0.6, p.y);
+    tick(s, { fire: true });
+    expect(s.bullets.length).toBe(0);
+    expect(p.knifeAt).toBe(s.time);
+    tick(s, {}, Math.ceil(KNIFE.impactS * 30) + 1);
+    expect(z.hp).toBe(200 - KNIFE.damage);
+    tick(s, {}, 10);
+    expect(z.hp).toBe(200 - KNIFE.damage);
+    expect(p.shells).toBe(shells);
+  });
+
+  it('si el zombi se aleja antes del golpe, el cuchillo no hace daño', () => {
+    const { s, p } = setup();
+    const z = zombie(s, p.x + 0.6, p.y);
+    tick(s, { fire: true });
+    z.x += 3;
+    tick(s, {}, 6);
+    expect(z.hp).toBe(200);
+  });
+
+  it('el sniper atraviesa varios zombis y gasta su munición', () => {
+    const { s, p } = setup();
+    Object.assign(p, { heavy: 'sniper', heavyAmmo: 3, weapon: 'sniper', dirX: 1, dirY: 0 });
+    const zs = [2, 3, 4].map((dx) => zombie(s, p.x + dx, p.y));
+    tick(s, { fire: true });
+    tick(s, {}, 10);
+    expect(zs.every((z) => z.hp === 200 - 70)).toBe(true);
+    expect(p.heavyAmmo).toBe(2);
+  });
+
+  it('el cohete explota y daña a todos los zombis cercanos; sin munición vuelve a la pistola', () => {
+    const { s, p } = setup();
+    Object.assign(p, { heavy: 'rocket', heavyAmmo: 1, weapon: 'rocket', dirX: 1, dirY: 0 });
+    const a = zombie(s, p.x + 3, p.y);
+    const b = zombie(s, p.x + 3.5, p.y + 0.8);
+    tick(s, { fire: true });
+    expect(p.weapon).toBe('pistol');
+    expect(p.heavy).toBe(null);
+    tick(s, {}, 20);
+    expect(a.hp).toBeLessThanOrEqual(200 - ROCKET.damage);
+    expect(b.hp).toBe(200 - ROCKET.damage);
+  });
+
+  it('la caja trae ametralladora, luego sniper y en la horda el lanzacohetes', () => {
+    expect([1, 2, 3].map((w) => ARMORY_LOOT[w].weapon)).toEqual(['smg', 'sniper', 'rocket']);
+    const s = createMatch({ seed: 3, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
+    const p = s.players[0];
+    s.time = 120;
+    step(s, {}, [], 1 / 30);
+    Object.assign(p, { x: s.armory.x, y: s.armory.y + 0.5 });
+    for (let i = 0; i < 30 * 5 + 2; i++) step(s, {}, [], 1 / 30);
+    expect(p.heavy).toBe('sniper');
+    expect(p.weapon).toBe('sniper');
+  });
+});
+
+describe('Distrito Industrial', () => {
+  it('el mapa industrial es simétrico, alcanzable y tiene tren, canales y estructuras industriales', () => {
+    expect(mapThemeOf('distrito-industrial')).toBe('industrial');
+    expect(mapThemeOf('ciudad-abandonada')).toBe('ciudad');
+    for (const seed of [1, 2, 3, 42, 777]) {
+      const m = generateMap(seed, 'industrial');
+      expect(m.theme).toBe('industrial');
+      expect(isMapReachable(m)).toBe(true);
+      expect(m.objects.filter((o) => o.kind === 'train').length).toBeGreaterThanOrEqual(2);
+      expect(m.ground.some((g) => g === Ground.RAIL)).toBe(true);
+      expect(m.ground.filter((g) => g === Ground.WATER).length).toBeGreaterThan(0);
+      const names = m.objects.filter((o) => o.kind === 'building').map((o) => BUILDINGS[o.variant].name);
+      expect(names.some((n) => n.startsWith('ind-') || n.startsWith('urb-') || n.startsWith('helicoptero'))).toBe(true);
+      for (let y = 0; y < MAP_H; y++)
+        for (let x = 0; x < MAP_W; x++) expect(m.tiles[y * MAP_W + x]).toBe(m.tiles[(MAP_H - 1 - y) * MAP_W + (MAP_W - 1 - x)]);
+    }
+  });
+
+  it('la partida usa el tema del mapa elegido en la sala', () => {
+    const s = createMatch({ seed: 5, mapId: 'distrito-industrial', players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
+    expect(s.map.theme).toBe('industrial');
+    expect(createMatch({ seed: 5, players: [] }).map.theme).toBe('ciudad');
+  });
+});
+
+describe('ventajas de los cinco supervivientes', () => {
+  const p1 = (survivor: string) => createMatch({ seed: 4, players: [{ id: 'a', slot: 1, name: 'A', survivor }] });
+
+  it('hay ventajas para los cinco', () => {
+    expect(Object.keys(SURVIVOR_PERKS).sort()).toEqual(['explorador', 'mecanica', 'medica', 'militar', 'obrero']);
+  });
+
+  it('la médica empieza con 2 botiquines más y cura 50 % más', () => {
+    const s = p1('medica');
+    const p = s.players[0];
+    expect(p.medkits).toBe(PLAYER_START.medkits + 2);
+    p.hp = 10;
+    step(s, {}, [{ playerId: 'a', cmd: { type: 'hotbar', slot: 3 } }], 1 / 30);
+    expect(p.hp).toBe(10 + 75);
+  });
+
+  it('las paredes del obrero aguantan 50 % más', () => {
+    const s = p1('obrero');
+    const p = s.players[0];
+    const b = s.map.bases[1];
+    step(s, {}, [{ playerId: 'a', cmd: { type: 'build', x: b.x + 1, y: b.y + 5 } }], 1 / 30);
+    const st = [...s.structures.values()][0];
+    expect(st.maxHp).toBe(Math.round(STRUCTURES.woodWall.hp * 1.5));
+  });
+
+  it('el militar hace 15 % más daño', () => {
+    const s = p1('militar');
+    const p = s.players[0];
+    Object.assign(p, { x: s.map.armory.x + 0.5, y: s.map.armory.y + 1.5, dirX: 1, dirY: 0 });
+    step(s, { a: { up: false, down: false, left: false, right: false, action: false, fire: true } }, [], 1 / 30);
+    expect(s.bullets[0].damage).toBeCloseTo(WEAPONS.pistol.damage * 1.15);
   });
 });

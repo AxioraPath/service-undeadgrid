@@ -4,6 +4,7 @@ import { phaseOf, playerInOwnBase, playerOnOwnCrate, previewBuild, type MatchSta
 
 const ZOMBIE_KIND = { normal: 0, fast: 1, tank: 2 } as const;
 const STRUCTURE_TYPE = { wood: 0, reinforced: 1, trap: 2, turret: 3 } as const;
+const PROJECTILE = { bullet: 0, sniper: 1, rocket: 2 } as const;
 
 /** Redondea a milésimas para que el JSON viaje más ligero. */
 const r3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -12,6 +13,7 @@ export function encodeMap(s: MatchState): GameMapDto {
   const m = s.map;
   return {
     seed: m.seed,
+    theme: m.theme,
     w: m.w,
     h: m.h,
     tiles: Array.from(m.tiles),
@@ -56,20 +58,24 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
         metal: p.metal,
         medkits: p.medkits,
         shells: p.shells,
-        smgAmmo: p.smgAmmo,
+        heavy: p.heavy,
+        heavyAmmo: p.heavyAmmo,
         turrets: p.turrets,
         kills: p.kills,
         zombieKills: p.zombieKills,
         deaths: p.deaths,
         shotAt: r3(p.shotAt),
         hurtAt: r3(p.hurtAt),
+        knifeAt: r3(p.knifeAt),
+        knifeDirX: p.knifeDir.x,
+        knifeDirY: p.knifeDir.y,
         inBase,
         onCrate: playerOnOwnCrate(s, p),
         buildHint: hint ? { x: hint.x, y: hint.y, ok: hint.ok, label: hint.label, orient: hint.orient } : null,
       };
     }),
     zombies: s.zombies.map((z): ZombieTuple => [z.id, r3(z.x), r3(z.y), z.hp, z.maxHp, ZOMBIE_KIND[z.kind], r3(z.attackAt), r3(z.hurtAt)]),
-    bullets: s.bullets.map((b) => [b.id, r3(b.x), r3(b.y), r3(b.vx), r3(b.vy)]),
+    bullets: s.bullets.map((b) => [b.id, r3(b.x), r3(b.y), r3(b.vx), r3(b.vy), PROJECTILE[b.kind]]),
     structures: [...s.structures].map(([key, st]) => [key, STRUCTURE_TYPE[st.type], st.hp, st.maxHp, st.owner as Slot, st.orient]),
     cores: { 1: s.cores[1].hp, 2: s.cores[2].hp },
     crates: { 1: { ...s.crates[1] }, 2: { ...s.crates[2] } },
@@ -82,7 +88,14 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
     },
     turrets: [...s.structures]
       .filter(([, st]) => st.type === 'turret')
-      .map(([key, st]) => [key, r3(st.aimX ?? 0), r3(st.aimY ?? 1), st.ammo ?? 0, s.time < (st.reloadUntil ?? 0) ? 1 : 0]),
+      .map(([key, st]) => [
+        key,
+        r3(st.aimX ?? 0),
+        r3(st.aimY ?? 1),
+        st.ammo ?? 0,
+        s.time < (st.reloadUntil ?? 0) ? 1 : 0,
+        st.shotAt !== undefined && s.time - st.shotAt < 0.15 ? 1 : 0,
+      ]),
     events,
     result: s.result ? { ...s.result } : null,
   };

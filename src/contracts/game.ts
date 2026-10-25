@@ -66,6 +66,8 @@ export interface RectDto extends PointDto {
 /** Mapa completo; se pide una vez con `game:sync` al entrar a la partida. */
 export interface GameMapDto {
   seed: number;
+  /** Tema visual y de generación: 'ciudad' o 'industrial'. */
+  theme: string;
   w: number;
   h: number;
   /** Capa de colisión (Tile) por casilla, fila a fila. */
@@ -104,10 +106,11 @@ export interface GamePlayerDto {
   alive: boolean;
   /** Segundos para reaparecer; null si no reaparece (núcleo destruido) o está vivo. */
   respawnIn: number | null;
-  weapon: 'pistol' | 'shotgun' | 'smg';
+  weapon: 'pistol' | 'shotgun' | 'smg' | 'sniper' | 'rocket';
   build: 'wall' | 'trap' | 'turret';
-  /** Balas de metralleta y torretas por colocar (de la caja de armamento). */
-  smgAmmo: number;
+  /** Arma pesada de la caja de armamento y su munición; torretas por colocar. */
+  heavy: 'smg' | 'sniper' | 'rocket' | null;
+  heavyAmmo: number;
   turrets: number;
   wood: number;
   metal: number;
@@ -119,6 +122,10 @@ export interface GamePlayerDto {
   /** Momento (tiempo de partida) del último disparo/daño, para animaciones. -1 = nunca. */
   shotAt: number;
   hurtAt: number;
+  /** Último ataque con cuchillo (-1 = nunca) y su dirección. */
+  knifeAt: number;
+  knifeDirX: number;
+  knifeDirY: number;
   inBase: boolean;
   onCrate: boolean;
   /** Qué haría el botón de acción en la casilla de enfrente (solo dentro de la base). */
@@ -127,13 +134,15 @@ export interface GamePlayerDto {
 
 /** [id, x, y, hp, maxHp, kind(0 normal | 1 rápido | 2 tanque), attackAt, hurtAt] */
 export type ZombieTuple = [number, number, number, number, number, number, number, number];
-/** [id, x, y, vx, vy] */
-export type BulletTuple = [number, number, number, number, number];
+/** [id, x, y, vx, vy, tipo(0 bala | 1 sniper | 2 cohete)] */
+export type BulletTuple = [number, number, number, number, number, number];
 /** [casilla, tipo(0 madera | 1 reforzada | 2 trampa), hp, maxHp, dueño, orientación('h' | 'v')] */
 export type StructureTuple = [number, number, number, number, Slot, 'h' | 'v'];
 
 export type GameEventDto =
   | { type: 'shot'; x: number; y: number; dirX: number; dirY: number; slot: Slot }
+  | { type: 'explosion'; x: number; y: number }
+  | { type: 'knife'; slot: Slot; x: number; y: number }
   | { type: 'hit'; x: number; y: number }
   | { type: 'zombieDied'; x: number; y: number; kind: 'normal' | 'fast' | 'tank' }
   | { type: 'playerDied'; slot: Slot; x: number; y: number }
@@ -141,8 +150,8 @@ export type GameEventDto =
   | { type: 'rejected'; slot: Slot; reason: string }
   | { type: 'phase'; label: string }
   | { type: 'coreHit'; slot: Slot }
-  | { type: 'armoryOpened'; slot: Slot }
-  | { type: 'armoryReady' };
+  | { type: 'armoryOpened'; slot: Slot; weapon: 'smg' | 'sniper' | 'rocket' }
+  | { type: 'armoryReady'; weapon: 'smg' | 'sniper' | 'rocket' };
 
 export interface GameStateDto {
   /** Tick del servidor (monotónico). */
@@ -159,8 +168,8 @@ export interface GameStateDto {
   crates: Record<Slot, StockDto>;
   /** Caja de armamento: disponible, quién la abrió y segundos que lleva abriéndola cada slot. */
   armory: { available: boolean; openedBy: Slot | null; progress: Partial<Record<Slot, number>> };
-  /** Torretas: [casilla, aimX, aimY, tiros en el cargador, recargando (0/1)]. */
-  turrets: [number, number, number, number, number][];
+  /** Torretas: [casilla, aimX, aimY, tiros en el cargador, recargando (0/1), disparando (0/1)]. */
+  turrets: [number, number, number, number, number, number][];
   /** Eventos ocurridos desde el último estado (efectos visuales). */
   events: GameEventDto[];
   result: { winner: Slot | 0; reason: string; durationS: number; byTime: boolean } | null;

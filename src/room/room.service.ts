@@ -278,6 +278,7 @@ export class RoomService {
     room.match = createMatch({
       seed: room.seed,
       difficulty: room.difficulty,
+      mapId: room.mapId,
       players: [...room.players.values()].map((p) => ({
         id: p.sessionId,
         slot: p.slot,
