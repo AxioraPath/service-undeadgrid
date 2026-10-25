@@ -1,6 +1,6 @@
 import type { GameMapDto, GameStateDto, ZombieTuple } from '../contracts/game';
 import type { Slot } from './constants';
-import { phaseOf, playerInOwnBase, playerOnOwnCrate, previewBuild, type MatchState } from './engine';
+import { durationOf, phaseOf, playerInOwnBase, playerOnOwnCrate, previewBuild, type MatchState } from './engine';
 
 const ZOMBIE_KIND = { normal: 0, fast: 1, tank: 2 } as const;
 const STRUCTURE_TYPE = { wood: 0, reinforced: 1, trap: 2, turret: 3 } as const;
@@ -36,6 +36,7 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
   return {
     tick: s.ticks,
     time: r3(s.time),
+    duration: durationOf(s),
     phase: { id: ph.id, label: ph.label, start: ph.start, end: ph.end, wave: ph.wave },
     maxWave: s.maxWave,
     players: s.players.map((p) => {

@@ -1,3 +1,4 @@
+import { MATCH_DURATION, PHASES } from '../config/game.config';
 import { computeTelemetry } from './telemetry';
 import { buildSyntheticMatches, seedBodySchema } from './seed';
 import { testEndpointsEnabled } from './test-endpoints.guard';
@@ -81,9 +82,9 @@ describe('buildSyntheticMatches', () => {
   it('respeta las reglas del juego (duración, oleadas, tiempo vivo)', () => {
     const { matches, players } = buildSyntheticMatches(500, 11);
     for (const m of matches) {
-      expect(m.durationS).toBeLessThanOrEqual(240);
-      expect(m.maxWave).toBe(Math.min(3, Math.floor(m.durationS / 60)));
-      if (m.reason === 'time_out') expect(m.durationS).toBe(240);
+      expect(m.durationS).toBeLessThanOrEqual(MATCH_DURATION);
+      expect(m.maxWave).toBe(PHASES.filter((ph) => ph.wave > 0 && m.durationS >= ph.start).length);
+      if (m.reason === 'time_out') expect(m.durationS).toBe(MATCH_DURATION);
     }
     const byId = new Map(matches.map((m) => [m.id, m]));
     for (const p of players) expect(p.timeAliveS).toBeLessThanOrEqual(byId.get(p.matchId)!.durationS);

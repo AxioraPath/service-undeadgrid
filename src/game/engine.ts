@@ -19,8 +19,8 @@ import {
   ZOMBIE_TRAITS,
   CRATE_REFILL,
   CRATE_START,
-  MATCH_DURATION,
-  PHASES,
+  matchDurationFor,
+  phasesFor,
   PLAYER,
   REWARDS,
   STRUCTURES,
@@ -616,7 +616,9 @@ export function previewBuildAt(s: MatchState, p: Player, x: number, y: number, n
   return need(p.metal >= STRUCTURES.trap.metal, `Trampa de púas (${STRUCTURES.trap.metal} metal)`)
 }
 
-const currentPhase = (s: MatchState) => PHASES[s.phaseIndex]
+const currentPhase = (s: MatchState) => phasesFor(s.ffa)[s.phaseIndex]
+/** Duración total de la partida según el modo (todos contra todos tiene menos preparación). */
+export const durationOf = (s: MatchState) => matchDurationFor(s.ffa)
 export const isCombat = (s: MatchState) => currentPhase(s).wave > 0
 
 // ---------------------------------------------------------------------------
@@ -1562,11 +1564,12 @@ function updatePickups(s: MatchState) {
 }
 
 function updatePhase(s: MatchState) {
-  let idx = PHASES.findIndex((ph) => s.time >= ph.start && s.time < ph.end)
-  if (idx === -1) idx = PHASES.length - 1
+  const phases = phasesFor(s.ffa)
+  let idx = phases.findIndex((ph) => s.time >= ph.start && s.time < ph.end)
+  if (idx === -1) idx = phases.length - 1
   if (idx === s.phaseIndex) return
   s.phaseIndex = idx
-  const ph = PHASES[idx]
+  const ph = phases[idx]
   s.events.push({ type: 'phase', label: ph.label })
   if (ph.wave > 0) {
     s.maxWave = ph.wave
@@ -1598,7 +1601,7 @@ function checkVictoryFfa(s: MatchState) {
     s.result = { winner: 0, winnerSlot: inGame[0]?.slot ?? null, reason: 'Último superviviente en pie', durationS: s.time, byTime: false }
     return
   }
-  if (s.time < MATCH_DURATION) return
+  if (s.time < durationOf(s)) return
   const ranked = [...s.players].sort((a, b) => lives(b) - lives(a) || b.kills - a.kills)
   const [first, second] = ranked
   const tie = !!second && lives(first) === lives(second) && first.kills === second.kills
@@ -1606,7 +1609,7 @@ function checkVictoryFfa(s: MatchState) {
     winner: 0,
     winnerSlot: tie ? null : first.slot,
     reason: tie ? 'Empate total' : 'Tiempo agotado: más vidas y bajas',
-    durationS: MATCH_DURATION,
+    durationS: durationOf(s),
     byTime: true,
   }
 }
@@ -1630,11 +1633,11 @@ function checkVictory(s: MatchState) {
     }
     return
   }
-  if (s.time >= MATCH_DURATION) {
+  if (s.time >= durationOf(s)) {
     const h1 = s.cores[1].hp
     const h2 = s.cores[2].hp
     if (h1 !== h2) {
-      s.result = { winner: h1 > h2 ? 1 : 2, reason: 'Tiempo agotado: núcleo con más vida', durationS: MATCH_DURATION, byTime: true }
+      s.result = { winner: h1 > h2 ? 1 : 2, reason: 'Tiempo agotado: núcleo con más vida', durationS: durationOf(s), byTime: true }
       return
     }
     const k = (team: Team) => s.players.filter((o) => o.team === team).reduce((n, p) => n + p.kills + p.zombieKills, 0)
@@ -1643,7 +1646,7 @@ function checkVictory(s: MatchState) {
     s.result = {
       winner: k1 === k2 ? 0 : k1 > k2 ? 1 : 2,
       reason: k1 === k2 ? 'Empate total' : 'Empate de núcleos: más kills',
-      durationS: MATCH_DURATION,
+      durationS: durationOf(s),
       byTime: true,
     }
   }

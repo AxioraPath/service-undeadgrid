@@ -28,14 +28,30 @@ export interface PhaseDef {
   wave: number // 0 = preparación (sin zombis ni PvP)
 }
 
-export const PHASES: PhaseDef[] = [
-  { id: 'prep', label: 'Fase de preparación', start: 0, end: 60, wave: 0 },
-  { id: 'wave1', label: 'Oleada 1', start: 60, end: 120, wave: 1 },
-  { id: 'wave2', label: 'Oleada 2', start: 120, end: 180, wave: 2 },
-  { id: 'horde', label: 'Horda final', start: 180, end: 240, wave: 3 },
-]
+/** Segundos de preparación: 25 en 1v1/2v2 (para armar la base) y 5 en todos contra todos. Cada oleada dura 60. */
+export const PREP_SECONDS = { vs: 25, ffa: 5 } as const
+const WAVE_SECONDS = 60
 
-export const MATCH_DURATION = 240
+function buildPhases(prep: number): PhaseDef[] {
+  const w = (n: number) => prep + WAVE_SECONDS * n
+  return [
+    { id: 'prep', label: 'Fase de preparación', start: 0, end: prep, wave: 0 },
+    { id: 'wave1', label: 'Oleada 1', start: w(0), end: w(1), wave: 1 },
+    { id: 'wave2', label: 'Oleada 2', start: w(1), end: w(2), wave: 2 },
+    { id: 'horde', label: 'Horda final', start: w(2), end: w(3), wave: 3 },
+  ]
+}
+
+/** Fases de 1v1/2v2. */
+export const PHASES: PhaseDef[] = buildPhases(PREP_SECONDS.vs)
+/** Fases de todos contra todos. */
+export const PHASES_FFA: PhaseDef[] = buildPhases(PREP_SECONDS.ffa)
+
+export const phasesFor = (ffa = false) => (ffa ? PHASES_FFA : PHASES)
+export const matchDurationFor = (ffa = false) => phasesFor(ffa)[phasesFor(ffa).length - 1].end
+
+/** Duración de una partida 1v1/2v2 (segundos). */
+export const MATCH_DURATION = matchDurationFor(false)
 
 export const PLAYER = {
   maxHp: 100,

@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { z } from 'zod';
-import { DIFFICULTIES, MAP_IDS, MATCH_DURATION, UNLOCKED_SURVIVORS } from '../config/game.config';
+import { DIFFICULTIES, MAP_IDS, MATCH_DURATION, PHASES, UNLOCKED_SURVIVORS } from '../config/game.config';
 
 export const SEED_CODE_PREFIX = 'SEED';
 
@@ -24,7 +24,8 @@ export function createRng(seed: number): () => number {
 
 const REASONS = ['core_destroyed', 'time_out', 'opponent_left'] as const;
 /** La preparación dura 60 s; luego una oleada por minuto (la horda final cuenta como 3). */
-const waveAt = (seconds: number) => Math.min(3, Math.floor(seconds / 60));
+/** Oleada más alta alcanzada a los `seconds` de partida (fases de 1v1/2v2). */
+const waveAt = (seconds: number) => PHASES.filter((p) => p.wave > 0 && seconds >= p.start).length;
 
 export interface SyntheticMatch {
   id: string;
@@ -64,7 +65,7 @@ export function buildSyntheticMatches(
     const id = randomUUID();
     const reason = pick(REASONS);
     const winnerSlot = rng() < 0.5 ? 1 : 2;
-    // Duraciones dentro de las reglas: por tiempo = 240 s; el resto termina antes.
+    // Duraciones dentro de las reglas: por tiempo = MATCH_DURATION; el resto termina antes.
     const durationS =
       reason === 'time_out'
         ? MATCH_DURATION
@@ -85,7 +86,7 @@ export function buildSyntheticMatches(
     for (const slot of [1, 2]) {
       const isWinner = slot === winnerSlot;
       // Valores plausibles: más zombis y combate cuanto más avanza la partida.
-      const combatS = Math.max(0, durationS - 60);
+      const combatS = Math.max(0, durationS - PHASES[0].end);
       const deaths = Math.floor(rng() * (1 + combatS / 50)) + (isWinner ? 0 : 1);
       const kills = Math.floor(rng() * (1 + combatS / 70)) + (isWinner ? 1 : 0);
       players.push({

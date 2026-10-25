@@ -85,7 +85,7 @@ export const DIFFICULTIES = ['Estándar', 'Difícil'] as const;
  * Fases, duración y vida del núcleo: vienen del motor de la partida (src/game),
  * que es la única fuente de las reglas.
  */
-export { CORE_HP, MATCH_DURATION, PHASES, type PhaseDef } from '../game/constants';
+export { CORE_HP, MATCH_DURATION, PHASES, PHASES_FFA, PREP_SECONDS, matchDurationFor, phasesFor, type PhaseDef } from '../game/constants';
 
 /** Ritmo con el que el servidor emite el tick de fase/reloj de combate. */
 export const PHASE_TICK_MS = 1000;

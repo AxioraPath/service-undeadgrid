@@ -12,7 +12,7 @@ describe('matchSummary', () => {
     svc.setReady(room.code, 's2', true);
     svc.start(room.code, 's1');
     svc.beginCombat(room);
-    for (let t = 0; t < 70; t++) {
+    for (let t = 0; t < 40; t++) {
       clock += 1000;
       svc.tickCombat(room);
     }
@@ -21,7 +21,7 @@ describe('matchSummary', () => {
     Object.assign(ana, { kills: 2, zombieKills: 9, deaths: 1, structuresBuilt: 4 });
 
     const s = matchSummary(room);
-    expect(s.durationS).toBe(70);
+    expect(s.durationS).toBe(40);
     expect(s.maxWave).toBe(1);
     expect(s.bySlot[1]).toMatchObject({ kills: 2, zombieKills: 9, deaths: 1, structuresBuilt: 4 });
     expect(s.bySlot[1].timeAliveS).toBeGreaterThan(0);

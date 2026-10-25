@@ -173,6 +173,8 @@ export interface GameStateDto {
   tick: number;
   /** Segundos de partida. */
   time: number;
+  /** Duración total de la partida en segundos (depende del modo). */
+  duration: number;
   phase: { id: string; label: string; start: number; end: number; wave: number };
   maxWave: number;
   players: GamePlayerDto[];

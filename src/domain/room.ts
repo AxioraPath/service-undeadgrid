@@ -4,10 +4,10 @@ import {
   DEFAULT_MODE,
   DIFFICULTIES,
   MAP_IDS,
-  MATCH_DURATION,
+  matchDurationFor,
   MODE_CAPACITY,
   MODE_MIN_PLAYERS,
-  PHASES,
+  phasesFor,
   SLOTS,
   TEAM_SIZE,
   TEAMS,
@@ -39,7 +39,8 @@ const TRANSITIONS: Record<RoomStatus, readonly RoomStatus[]> = {
 };
 
 /** Deriva la fase de combate a partir de los segundos transcurridos. */
-export function phaseAt(elapsed: number): PhaseDef {
+export function phaseAt(elapsed: number, ffa = false): PhaseDef {
+  const PHASES = phasesFor(ffa);
   for (const p of PHASES) {
     if (elapsed >= p.start && elapsed < p.end) return p;
   }
@@ -280,16 +281,17 @@ export class Room {
     this.touch();
   }
 
-  /** Segundos transcurridos de combate (acotado a MATCH_DURATION). */
+  /** Segundos transcurridos de combate (acotado a la duración del modo). */
   elapsed(now: number): number {
-    if (this.match) return Math.min(MATCH_DURATION, Math.floor(this.match.time));
+    const max = matchDurationFor(this.mode === 'ffa');
+    if (this.match) return Math.min(max, Math.floor(this.match.time));
     if (this.combatStartedAt === null) return 0;
-    return Math.min(MATCH_DURATION, Math.floor((now - this.combatStartedAt) / 1000));
+    return Math.min(max, Math.floor((now - this.combatStartedAt) / 1000));
   }
 
   combatSnapshot(now: number): CombatSnapshot {
     const elapsed = this.elapsed(now);
-    const phase = phaseAt(elapsed);
+    const phase = phaseAt(elapsed, this.mode === 'ffa');
     return {
       elapsed,
       phase: phase.id,

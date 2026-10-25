@@ -150,3 +150,26 @@ describe('forma de choque de los objetos (medida del dibujo)', () => {
     }
   });
 });
+
+describe('duración de la preparación según el modo', () => {
+  const one = [{ id: 'a', slot: 1 as const, name: 'A', survivor: 'base' }, { id: 'b', slot: 2 as const, name: 'B', survivor: 'base' }];
+  const runTo = (s: MatchState, seconds: number) => {
+    while (s.time < seconds) step(s, {}, [], 1 / 30);
+    return encodeState(s);
+  };
+
+  it('1v1/2v2: 25 s de preparación y luego la oleada 1', () => {
+    const s = createMatch({ seed: 5, players: one });
+    expect(encodeState(s).phase).toMatchObject({ id: 'prep', end: 25 });
+    expect(runTo(s, 24.9).phase.id).toBe('prep');
+    expect(runTo(s, 25.1).phase).toMatchObject({ id: 'wave1', start: 25, end: 85 });
+    expect(encodeState(s).duration).toBe(205);
+  });
+
+  it('todos contra todos: solo 5 s de preparación', () => {
+    const s = createMatch({ seed: 5, players: one, ffa: true, lives: 3 });
+    expect(encodeState(s).phase).toMatchObject({ id: 'prep', end: 5 });
+    expect(runTo(s, 5.1).phase).toMatchObject({ id: 'wave1', start: 5, end: 65 });
+    expect(encodeState(s).duration).toBe(185);
+  });
+});
