@@ -41,6 +41,8 @@ export const gameInputSchema = z.object({
   fire: z.boolean().optional(),
   /** Con `fire`: el servidor apunta solo al objetivo más cercano (toque en el celular). */
   autoAim: z.boolean().optional(),
+  /** Apuntado manual en celular con asistencia (corrige hacia un objetivo cercano a la mira). */
+  aimAssist: z.boolean().optional(),
 });
 export type GameInputPayload = z.infer<typeof gameInputSchema>;
 

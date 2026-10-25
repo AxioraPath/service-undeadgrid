@@ -178,11 +178,12 @@ export const difficultyOf = (id: string | undefined) => DIFFICULTY[id as Difficu
 export const BUILD_REACH = 4.5
 
 /**
- * Colisión de jugadores y zombis: una caja a la altura de los pies (y = posición, en casillas).
- * El dibujo pone los pies ~0.34 casillas debajo de la posición, así que la caja va de -0.1 a +0.34:
- * se choca donde se ve el personaje, no con su cabeza.
+ * Colisión de jugadores y zombis: una franja delgada a la altura de los pies (y = posición, en casillas).
+ * El dibujo pone los pies ~0.34 casillas debajo de la posición, así que la franja va de +0.16 a +0.34:
+ * al caminar hacia un objeto, los pies llegan casi a su base (antes quedaban ~media casilla antes y
+ * parecía que se chocaba con algo invisible); la cabeza puede pasar por delante del objeto (2.5D).
  */
-export const BODY = { top: -0.1, bottom: 0.34 }
+export const BODY = { top: 0.16, bottom: 0.34 }
 
 /** Caja de armamento del centro: hay que quedarse junto a ella sin recibir daño para abrirla. */
 export const ARMORY = { openS: 5, radius: 1.6, turrets: 1, medkits: 1 }

@@ -245,7 +245,8 @@ describe('Mouse aiming', () => {
   it('aim drives the build front tile', () => {
     const { s, p } = mk();
     step(s, { a: { ...idle, aim: { x: 0, y: -50 } } }, [], 1 / 30);
-    expect(frontTile(p)).toEqual({ x: Math.floor(p.x), y: Math.floor(p.y - PLAYER.radius) - 1 });
+    // Facing up: the tile right above the foot collision box (see BODY).
+    expect(frontTile(p)).toEqual({ x: Math.floor(p.x), y: Math.floor(p.y + BODY.top) - 1 });
   });
 
   it.each([
@@ -681,5 +682,31 @@ describe('Desierto Ferroviario', () => {
       const names = m.objects.filter((o) => o.kind === 'building').map((o) => BUILDINGS[o.variant].name);
       expect(names.some((n) => n === 'meseta' || n.startsWith('roca-desierto'))).toBe(true);
     }
+  });
+});
+
+describe('asistencia de apuntado (celular, apuntado manual)', () => {
+  const idle = { up: false, down: false, left: false, right: false, action: false };
+  const setup = () => {
+    const s = createMatch({ seed: 11, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
+    const p = s.players[0];
+    Object.assign(p, { x: s.map.armory.x + 0.5, y: s.map.armory.y + 1.5 });
+    s.zombies.push({ id: 900, x: p.x + 5, y: p.y, px: p.x + 5, py: p.y, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, attackAt: -1, hurtAt: -1, target: null });
+    return { s, p };
+  };
+  const shotAngle = (aimDeg: number) => {
+    const { s } = setup();
+    const a = (aimDeg * Math.PI) / 180;
+    step(s, { a: { ...idle, fire: true, aimAssist: true, aim: { x: Math.cos(a), y: Math.sin(a) } } }, [], 1 / 30);
+    const b = s.bullets[0];
+    return (Math.atan2(b.vy, b.vx) * 180) / Math.PI;
+  };
+
+  it('apuntar a 12° de un zombi corrige el tiro hacia él', () => {
+    expect(Math.abs(shotAngle(12))).toBeLessThanOrEqual(4.1);
+  });
+
+  it('apuntar lejos (40°) no se corrige', () => {
+    expect(shotAngle(40)).toBeCloseTo(40, 0);
   });
 });

@@ -561,8 +561,8 @@ export class RoomGateway
   ): Promise<Ack> {
     return this.handle(client, 'game:input', () => {
       const code = this.requireRoomCode(client);
-      const { up, down, left, right, action, aim, fire, autoAim } = this.parse(gameInputSchema, body);
-      this.rooms.input(code, client.id, { up, down, left, right, action, aim, fire, autoAim });
+      const { up, down, left, right, action, aim, fire, autoAim, aimAssist } = this.parse(gameInputSchema, body);
+      this.rooms.input(code, client.id, { up, down, left, right, action, aim, fire, autoAim, aimAssist });
       return undefined;
     });
   }

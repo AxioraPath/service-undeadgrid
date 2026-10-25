@@ -53,6 +53,8 @@ export interface PlayerInput {
   fire?: boolean
   /** Con `fire`: el servidor apunta solo al objetivo más cercano (toque en el celular, como Brawl Stars). */
   autoAim?: boolean
+  /** Apuntado manual en celular: si apunta cerca de un objetivo (cono de AIM_ASSIST_CONE), el tiro se corrige hacia él. */
+  aimAssist?: boolean
 }
 
 /** Cantidad de ticks simulados (el servidor avanza a paso fijo de 1/30 s). */
@@ -406,15 +408,32 @@ function moveEntity(s: MatchState, e: { x: number; y: number }, dx: number, dy: 
   let hit: Point | null = null
   if (dx !== 0) {
     const h = overlapSolid(s, e.x + dx, e.y, r, owner)
-    if (h) hit = h
-    else e.x += dx
+    if (h) {
+      hit = h
+      // Avanza hasta tocar el obstáculo en vez de quedarse a un paso (si no, queda un hueco "invisible").
+      e.x += dx * freeFraction((f) => overlapSolid(s, e.x + dx * f, e.y, r, owner) !== null)
+    } else e.x += dx
   }
   if (dy !== 0) {
     const h = overlapSolid(s, e.x, e.y + dy, r, owner)
-    if (h) hit = hit ?? h
-    else e.y += dy
+    if (h) {
+      hit = hit ?? h
+      e.y += dy * freeFraction((f) => overlapSolid(s, e.x, e.y + dy * f, r, owner) !== null)
+    } else e.y += dy
   }
   return hit
+}
+
+/** Mayor fracción (0..1) del paso que se puede dar sin chocar (búsqueda binaria, precisión ~1/64 del paso). */
+function freeFraction(blocked: (f: number) => boolean): number {
+  let lo = 0
+  let hi = 1
+  for (let i = 0; i < 6; i++) {
+    const mid = (lo + hi) / 2
+    if (blocked(mid)) hi = mid
+    else lo = mid
+  }
+  return lo
 }
 
 export const playerInOwnBase = (s: MatchState, p: Player) => inRect(s.map.bases[p.team], Math.floor(p.x), Math.floor(p.y))
@@ -644,6 +663,8 @@ function shoot(s: MatchState, p: Player) {
 
 /** Autoapuntado: desfase máximo al azar (radianes, ±8°) para que no sea perfecto. */
 export const AUTO_AIM_SPREAD = 0.14
+/** Asistencia al apuntar a mano en celular: corrige el tiro hacia un objetivo a menos de ±15° de donde apunta. */
+export const AIM_ASSIST_CONE = 0.26
 
 /** ¿Una bala de `team` llegaría de (x0, y0) a (x1, y1)? Las paredes del propio equipo no estorban. */
 function clearShot(s: MatchState, x0: number, y0: number, x1: number, y1: number, team: Team) {
@@ -663,12 +684,19 @@ function clearShot(s: MatchState, x0: number, y0: number, x1: number, y1: number
  * Dirección hacia el objetivo más cercano a la vista y al alcance del arma (rival de otro equipo en combate, o zombi),
  * con un pequeño desfase al azar. null si no hay ninguno: se dispara hacia donde mira.
  */
-function autoAimAt(s: MatchState, p: Player): { x: number; y: number } | null {
+function autoAimAt(s: MatchState, p: Player, cone?: { x: number; y: number }): { x: number; y: number } | null {
   let best: Point | null = null
   let bestD = WEAPONS[p.weapon].range
+  const coneAngle = cone ? Math.atan2(cone.y, cone.x) : 0
+  const inCone = (x: number, y: number) => {
+    if (!cone) return true
+    let da = Math.atan2(y - p.y, x - p.x) - coneAngle
+    da = Math.atan2(Math.sin(da), Math.cos(da))
+    return Math.abs(da) <= AIM_ASSIST_CONE
+  }
   const consider = (x: number, y: number) => {
     const d = Math.hypot(x - p.x, y - p.y)
-    if (d < bestD && d > 1e-3 && clearShot(s, p.x, p.y, x, y, p.team)) {
+    if (d < bestD && d > 1e-3 && inCone(x, y) && clearShot(s, p.x, p.y, x, y, p.team)) {
       best = { x, y }
       bestD = d
     }
@@ -677,7 +705,9 @@ function autoAimAt(s: MatchState, p: Player): { x: number; y: number } | null {
   for (const z of s.zombies) if (z.hp > 0) consider(z.x, z.y)
   if (!best) return null
   const t: Point = best
-  const a = Math.atan2(t.y - p.y, t.x - p.x) + (s.rng.next() - 0.5) * 2 * AUTO_AIM_SPREAD
+  // Asistencia al apuntar a mano: el desfase es la mitad (el jugador ya apuntó cerca).
+  const spread = cone ? AUTO_AIM_SPREAD / 2 : AUTO_AIM_SPREAD
+  const a = Math.atan2(t.y - p.y, t.x - p.x) + (s.rng.next() - 0.5) * 2 * spread
   return { x: Math.cos(a), y: Math.sin(a) }
 }
 
@@ -760,6 +790,7 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
   // Aim (if valid) drives facing; movement keys then never change it.
   p.aim = sanitizeAim(input.aim)
   if (input.fire && input.autoAim && p.fireCd <= 0) p.aim = autoAimAt(s, p) ?? p.aim
+  else if (input.fire && input.aimAssist && p.aim && p.fireCd <= 0) p.aim = autoAimAt(s, p, p.aim) ?? p.aim
   if (p.aim) {
     const f = quantizeFacing(p.aim.x, p.aim.y)
     p.dirX = f.x
