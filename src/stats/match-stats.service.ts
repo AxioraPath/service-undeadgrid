@@ -59,6 +59,8 @@ export function matchOverDetails(room: Room): Omit<MatchOverPayload, 'xp'> {
       team,
       zombieKills: bySlot[slot].zombieKills,
       structuresBuilt: bySlot[slot].structuresBuilt,
+      kills: bySlot[slot].kills,
+      deaths: bySlot[slot].deaths,
       coreDamageDealt: room.match?.coreDamageDealt[slot] ?? 0,
       coreHpPct: Math.max(0, Math.min(100, Math.round((hp / CORE_HP) * 100))),
     };

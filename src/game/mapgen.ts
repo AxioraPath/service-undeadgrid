@@ -1,5 +1,6 @@
 import { BASE_SIZE, MAP_H, MAP_W, type Team } from './constants'
 import { createRng, type Rng } from './rng'
+import { OBJECT_SHAPES, type ShapeRect } from './objectShapes'
 
 /** Capa de colisión: qué ocupa cada casilla. */
 export const Tile = {
@@ -124,6 +125,11 @@ export interface GameMapData {
   spawns: Point[]
   /** Punto (en casillas) de la caja de armamento, en el centro de la plazoleta. */
   armory: Point
+  /**
+   * Forma de choque de las casillas ocupadas por objetos (medida del dibujo, ver objectShapes.ts):
+   * solo se choca con esa parte de la casilla. Las casillas sin forma chocan enteras.
+   */
+  shapes: Map<number, ShapeRect>
 }
 
 const SOLID_TILES = new Set<number>([
@@ -318,6 +324,10 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
     return true
   }
 
+  const shapes = new Map<number, ShapeRect>()
+  /** Clave de la forma del objeto (árboles y rocas cambian de sprite en el desierto). */
+  const shapeKey = (kind: ObjectKind, variant: number, w: number, h: number) =>
+    `${kind}:${variant}:${w}x${h}` + (kind === 'tree' || kind === 'rock' ? (theme === 'desierto' ? ':d' : ':n') : '')
   const place = (kind: ObjectKind, x: number, y: number, w: number, h: number, variant: number, on: number = Tile.GRASS, margin = false) => {
     const mx = MAP_W - x - w
     const my = MAP_H - y - h
@@ -332,6 +342,8 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
           used[idx(xx, yy)] = 1
           if (kind === 'lamp' || (solid && solid[yy - oy][xx - ox] !== '#')) continue
           tiles[idx(xx, yy)] = OBJECT_TILE[kind]
+          const sh = OBJECT_SHAPES[shapeKey(kind, variant, w, h)]?.[yy - oy]?.[xx - ox]
+          if (sh) shapes.set(idx(xx, yy), sh)
           if (kind === 'water') ground[idx(xx, yy)] = Ground.WATER
         }
       objects.push({ kind, x: ox, y: oy, w, h, variant })
@@ -424,7 +436,7 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
         for (let xx = ox; xx < ox + 2; xx++) if (tiles[idx(xx, yy)] === Tile.GRASS && ground[idx(xx, yy)] === Ground.GRASS) ground[idx(xx, yy)] = Ground.DIRT
   }
 
-  return { seed, theme, w: MAP_W, h: MAP_H, tiles, ground, objects, bases, cores, crates, spawns, armory }
+  return { seed, theme, w: MAP_W, h: MAP_H, tiles, ground, objects, bases, cores, crates, spawns, armory, shapes }
 }
 
 function roadNeighbors(tiles: Uint8Array, x: number, y: number) {

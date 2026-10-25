@@ -96,6 +96,9 @@ export interface MatchPlayerStats {
   coreDamageDealt: number;
   /** Remaining HP percentage (0-100) of this player's team core. */
   coreHpPct: number;
+  /** Jugadores eliminados y muertes propias (tabla de todos contra todos). */
+  kills?: number;
+  deaths?: number;
 }
 
 /** Payload of `match:over`: the room snapshot plus the results-screen details. */

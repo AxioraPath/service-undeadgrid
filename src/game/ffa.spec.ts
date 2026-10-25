@@ -122,3 +122,31 @@ describe('rasgos de los zombis (todos los modos)', () => {
     expect(fast?.speedMul).toBe(ZOMBIE_TRAITS.fast.speed);
   });
 });
+
+describe('forma de choque de los objetos (medida del dibujo)', () => {
+  it('se puede entrar en la parte vacía de la casilla de un objeto y se choca donde está su dibujo', () => {
+    const s = createMatch({ seed: 3, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
+    const p = s.players[0];
+    p.x = s.map.armory.x - 6.5;
+    p.y = s.map.armory.y + 2.3;
+    const tx = Math.floor(p.x) + 2;
+    const ty = Math.floor(p.y);
+    const i = ty * MAP_W + tx;
+    s.map.tiles[i] = 11; // barrera
+    s.map.shapes.set(i, [0.5, 0, 1, 1]);
+    for (let k = 0; k < 40; k++) step(s, { a: { up: false, down: false, left: false, right: true, action: false } }, [], 1 / 30);
+    // Llega hasta la mitad de la casilla (donde empieza el dibujo), no se queda en el borde.
+    expect(p.x + 0.32).toBeGreaterThan(tx + 0.45);
+    expect(p.x + 0.32).toBeLessThanOrEqual(tx + 0.5 + 1e-6);
+  });
+
+  it('las formas existen para los objetos del mapa generado', () => {
+    const s = createMatch({ seed: 7, players: [] });
+    expect(s.map.shapes.size).toBeGreaterThan(20);
+    for (const [, sh] of s.map.shapes) {
+      expect(sh[0]).toBeGreaterThanOrEqual(0);
+      expect(sh[2]).toBeLessThanOrEqual(1);
+      expect(sh[2] - sh[0]).toBeGreaterThan(0.2);
+    }
+  });
+});

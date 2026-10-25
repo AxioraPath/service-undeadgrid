@@ -467,13 +467,30 @@ export const isBlocked = (s: MatchState, x: number, y: number, side?: number) =>
   return w !== undefined && w.side !== side
 }
 
-const bulletBlocked = (s: MatchState, x: number, y: number) =>
-  blocksBullets(tileAt(s.map, x, y)) || isCoreTile(s, x, y) || wallAt(s, x, y) !== undefined
+/** ¿El punto (px, py) de la casilla cae dentro de la forma de choque del objeto? Sin forma: toda la casilla. */
+const inShape = (s: MatchState, tx: number, ty: number, px: number, py: number) => {
+  const sh = s.map.shapes.get(tileIndex(tx, ty))
+  return !sh || (px - tx >= sh[0] && px - tx <= sh[2] && py - ty >= sh[1] && py - ty <= sh[3])
+}
+
+/** `px, py`: posición exacta de la bala; con ella, los objetos solo frenan donde está su dibujo. */
+const bulletBlocked = (s: MatchState, x: number, y: number, px?: number, py?: number) =>
+  (blocksBullets(tileAt(s.map, x, y)) && (px === undefined || py === undefined || inShape(s, x, y, px, py))) ||
+  isCoreTile(s, x, y) ||
+  wallAt(s, x, y) !== undefined
 
 /** Devuelve la primera casilla sólida que toca el cuerpo (caja a la altura de los pies, ver BODY). */
 function overlapSolid(s: MatchState, x: number, y: number, r: number, owner?: number): Point | null {
-  for (let ty = Math.floor(y + BODY.top); ty <= Math.floor(y + BODY.bottom - 1e-6); ty++)
-    for (let tx = Math.floor(x - r); tx <= Math.floor(x + r); tx++) if (isBlocked(s, tx, ty, owner)) return { x: tx, y: ty }
+  const top = y + BODY.top
+  const bottom = y + BODY.bottom
+  for (let ty = Math.floor(top); ty <= Math.floor(bottom - 1e-6); ty++)
+    for (let tx = Math.floor(x - r); tx <= Math.floor(x + r); tx++) {
+      if (!isBlocked(s, tx, ty, owner)) continue
+      // Objeto del mapa con forma medida: solo choca si el cuerpo toca esa parte de la casilla.
+      const sh = isSolidTileKind(tileAt(s.map, tx, ty)) && !isCoreTile(s, tx, ty) && !wallAt(s, tx, ty) ? s.map.shapes.get(tileIndex(tx, ty)) : undefined
+      if (sh && (x + r <= tx + sh[0] || x - r >= tx + sh[2] || bottom <= ty + sh[1] || top >= ty + sh[3])) continue
+      return { x: tx, y: ty }
+    }
   return null
 }
 
@@ -762,11 +779,13 @@ function clearShot(s: MatchState, x0: number, y0: number, x1: number, y1: number
   const d = Math.hypot(x1 - x0, y1 - y0)
   const n = Math.ceil(d / 0.25)
   for (let i = 1; i < n; i++) {
-    const tx = Math.floor(x0 + ((x1 - x0) * i) / n)
-    const ty = Math.floor(y0 + ((y1 - y0) * i) / n)
+    const px = x0 + ((x1 - x0) * i) / n
+    const py = y0 + ((y1 - y0) * i) / n
+    const tx = Math.floor(px)
+    const ty = Math.floor(py)
     const own = wallAt(s, tx, ty)
     if (own && own.side === side && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
-    if (bulletBlocked(s, tx, ty)) return false
+    if (bulletBlocked(s, tx, ty, px, py)) return false
   }
   return true
 }
@@ -1008,6 +1027,7 @@ function damageProp(s: MatchState, index: number, dmg: number, sourceSlot: Slot 
   s.destroyedProps.push(index)
   for (const c of prop.cells) {
     s.map.tiles[c] = Tile.GRASS
+    s.map.shapes.delete(c)
     s.propAt.delete(c)
   }
   s.events.push({ type: 'propDestroyed', index })
@@ -1081,7 +1101,7 @@ function updateBullets(s: MatchState, dt: number) {
       // Tus paredes y torretas no frenan tus balas: se puede defender la base desde dentro.
       const own = wallAt(s, tx, ty)
       if (own && own.side === b.ownerSide && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
-      if (bulletBlocked(s, tx, ty)) {
+      if (bulletBlocked(s, tx, ty, b.x, b.y)) {
         if (b.kind === 'rocket') {
           explode(s, b)
           return false
