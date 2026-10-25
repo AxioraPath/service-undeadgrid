@@ -663,3 +663,23 @@ describe('autoapuntado (celular)', () => {
     expect(Math.abs(s.bullets[0].vy)).toBeLessThan(1e-9);
   });
 });
+
+describe('Desierto Ferroviario', () => {
+  it('es simétrico, alcanzable, con vías que cruzan el mapa, oasis y rocas del cañón', () => {
+    expect(mapThemeOf('desierto-ferroviario')).toBe('desierto');
+    for (const seed of [1, 2, 3, 42, 777]) {
+      const m = generateMap(seed, 'desierto');
+      expect(m.theme).toBe('desierto');
+      expect(isMapReachable(m)).toBe(true);
+      expectSymmetric(m);
+      // Las vías van de la orilla de arriba y de la izquierda hasta la plazoleta (y su espejo).
+      const cx = Math.floor(MAP_W / 2) - 1;
+      const cy = Math.floor(MAP_H / 2) - 1;
+      expect(m.ground[3 * MAP_W + cx]).toBe(Ground.RAIL);
+      expect(m.ground[cy * MAP_W + 3]).toBe(Ground.RAIL);
+      expect(m.ground.filter((g) => g === Ground.WATER).length).toBeGreaterThan(0);
+      const names = m.objects.filter((o) => o.kind === 'building').map((o) => BUILDINGS[o.variant].name);
+      expect(names.some((n) => n === 'meseta' || n.startsWith('roca-desierto'))).toBe(true);
+    }
+  });
+});

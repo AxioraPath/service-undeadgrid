@@ -36,10 +36,11 @@ export const Ground = {
 } as const
 
 /** Tema del mapa: cambia el trazado de detalles, las estructuras y cómo lo dibuja el cliente. */
-export type MapTheme = 'ciudad' | 'industrial'
+export type MapTheme = 'ciudad' | 'industrial' | 'desierto'
 
 /** Mapa elegido en la sala → tema del generador. El desierto aún no existe: usa la ciudad. */
-export const mapThemeOf = (mapId: string | undefined): MapTheme => (mapId === 'distrito-industrial' ? 'industrial' : 'ciudad')
+export const mapThemeOf = (mapId: string | undefined): MapTheme =>
+  mapId === 'distrito-industrial' ? 'industrial' : mapId === 'desierto-ferroviario' ? 'desierto' : 'ciudad'
 
 /** `lamp` es solo decoración (no bloquea); el resto ocupa sus casillas. `building` usa BUILDINGS[variant]. */
 export type ObjectKind = 'tree' | 'rock' | 'car' | 'container' | 'debris' | 'barrel' | 'tires' | 'barrier' | 'water' | 'lamp' | 'building' | 'train'
@@ -74,12 +75,17 @@ export const BUILDINGS = [
   { name: 'urb-parada-autobus', w: 2, h: 2, solid: ['##', '##'] },
   { name: 'valla-metal-v-sana', w: 1, h: 2, solid: ['#', '#'] },
   { name: 'ind-control-h', w: 3, h: 2, solid: ['##.', '.##'] },
+  // Desierto ferroviario: mesetas y rocas del cañón.
+  { name: 'meseta', w: 2, h: 2, solid: ['##', '##'] },
+  { name: 'roca-desierto-1', w: 2, h: 2, solid: ['.#', '##'] },
+  { name: 'roca-desierto-2', w: 2, h: 2, solid: ['##', '##'] },
 ] as const
 
 /** Estructuras de cada tema: grandes (con pasillo alrededor) y pequeñas. */
 const THEME_BUILDINGS: Record<MapTheme, { big: number[]; small: number[]; landmark: number | null }> = {
   ciudad: { big: [0, 1, 2, 3, 4, 5], small: [6, 7, 8], landmark: null },
   industrial: { big: [9, 10, 11, 12, 13, 14, 15, 16, 22], small: [18, 19, 20, 21, 8], landmark: 17 },
+  desierto: { big: [0, 2, 3, 3, 5, 4, 14, 15], small: [23, 24, 25, 23, 6, 7, 8, 19], landmark: null },
 }
 
 export interface MapObject {
@@ -206,6 +212,10 @@ const RAIL_X = CX + 3
 
 function buildMap(seed: number, theme: MapTheme): GameMapData {
   const industrial = theme === 'industrial'
+  // Desierto: las carreteras principales son vías de tren que cruzan el mapa; las de las bases, caminos de tierra.
+  const desert = theme === 'desierto'
+  /** Cantidad por tema: [ciudad, industrial, desierto]. */
+  const by = (ciudad: number, ind: number, des: number) => (industrial ? ind : desert ? des : ciudad)
   const rng = createRng(seed)
   const tiles = new Uint8Array(MAP_W * MAP_H)
   const ground = new Uint8Array(MAP_W * MAP_H)
@@ -251,14 +261,15 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
         }
 
   // Carreteras (se marcan con su espejo).
-  const road = (x: number, y: number) => {
+  const road = (x: number, y: number, g: number = Ground.ROAD) => {
     for (const q of [{ x, y }, mirror(x, y)]) {
       tiles[idx(q.x, q.y)] = Tile.ROAD
-      ground[idx(q.x, q.y)] = Ground.ROAD
+      ground[idx(q.x, q.y)] = g
     }
   }
-  for (let y = FOREST; y < PLAZA.y; y++) road(CX, y) // de la orilla de arriba a la plazoleta
-  for (let x = FOREST; x < PLAZA.x; x++) road(x, CY) // de la orilla izquierda a la plazoleta
+  const spine = desert ? Ground.RAIL : Ground.ROAD
+  for (let y = FOREST; y < PLAZA.y; y++) road(CX, y, spine) // de la orilla de arriba a la plazoleta
+  for (let x = FOREST; x < PLAZA.x; x++) road(x, CY, spine) // de la orilla izquierda a la plazoleta
   const b1 = bases[1]
   for (let x = b1.x + b1.w; x < CX; x++) road(x, b1.y + 4) // base 1 → carretera vertical
   for (let y = b1.y + b1.h; y < CY; y++) road(b1.x + 4, y) // base 1 → carretera horizontal
@@ -291,7 +302,7 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
         if (xx < FOREST || yy < FOREST || xx >= MAP_W - FOREST || yy >= MAP_H - FOREST) return false
         const i = idx(xx, yy)
         if (reserved(xx, yy) || tiles[i] !== on || used[i]) return false
-        if (on === Tile.ROAD && (ground[i] !== Ground.ROAD || roadNeighbors(tiles, xx, yy) > 2)) return false
+        if (on === Tile.ROAD && ((ground[i] !== Ground.ROAD && ground[i] !== Ground.RAIL) || roadNeighbors(tiles, xx, yy) > 2)) return false
       }
     return true
   }
@@ -352,7 +363,7 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
     tryPlace(1, 40, (r) => place('water', r.int(MAP_W - FOREST - 9, MAP_W - FOREST - 6), r.int(FOREST + 1, FOREST + 3), r.int(4, 5), 3, 0))
   }
   // Estructuras grandes y pequeñas del tema, siempre con pasillo alrededor.
-  tryPlace(industrial ? 5 : 4, 300, (r) => {
+  tryPlace(by(4, 5, 5), 300, (r) => {
     const v = r.pick(set.big)
     const b = BUILDINGS[v]
     return place('building', anyX(r, b.w), anyY(r, b.h), b.w, b.h, v, Tile.GRASS, true)
@@ -362,17 +373,26 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
     const b = BUILDINGS[v]
     return place('building', anyX(r, b.w), anyY(r, b.h), b.w, b.h, v, Tile.GRASS, true)
   })
-  // Vehículos abandonados sobre las carreteras (nunca en puentes ni cruces).
-  tryPlace(3, 80, (r) =>
-    r.next() < 0.5
-      ? place('car', r.int(FOREST + 3, CX - 3), CY, 2, 1, r.int(0, 3), Tile.ROAD)
-      : place('car', CX, r.int(FOREST + 3, CY - 4), 1, 2, r.int(0, 3), Tile.ROAD),
-  )
-  tryPlace(industrial ? 8 : 4, 160, (r) => (r.next() < 0.5 ? place('container', anyX(r, 2), anyY(r), 2, 1, r.int(0, 1)) : place('container', anyX(r), anyY(r, 2), 1, 2, r.int(0, 1))))
-  tryPlace(industrial ? 5 : 3, 100, (r) => place('barrier', anyX(r, 2), anyY(r), 2, 1, r.int(0, 1)))
-  tryPlace(industrial ? 4 : 10, 200, (r) => place('rock', anyX(r), anyY(r), 1, 1, r.int(0, 1)))
+  if (desert) {
+    // Vagones detenidos sobre las vías (horizontales en la vía de la izquierda, verticales en la de arriba).
+    tryPlace(2, 80, (r) =>
+      r.next() < 0.5
+        ? place('train', r.int(FOREST + 3, CX - 6), CY, 3, 1, 0, Tile.ROAD)
+        : place('train', CX, r.int(FOREST + 3, CY - 7), 1, 3, 0, Tile.ROAD),
+    )
+  } else {
+    // Vehículos abandonados sobre las carreteras (nunca en puentes ni cruces).
+    tryPlace(3, 80, (r) =>
+      r.next() < 0.5
+        ? place('car', r.int(FOREST + 3, CX - 3), CY, 2, 1, r.int(0, 3), Tile.ROAD)
+        : place('car', CX, r.int(FOREST + 3, CY - 4), 1, 2, r.int(0, 3), Tile.ROAD),
+    )
+  }
+  tryPlace(by(4, 8, 3), 160, (r) => (r.next() < 0.5 ? place('container', anyX(r, 2), anyY(r), 2, 1, r.int(0, 1)) : place('container', anyX(r), anyY(r, 2), 1, 2, r.int(0, 1))))
+  tryPlace(by(3, 5, 2), 100, (r) => place('barrier', anyX(r, 2), anyY(r), 2, 1, r.int(0, 1)))
+  tryPlace(by(10, 4, 12), 200, (r) => place('rock', anyX(r), anyY(r), 1, 1, r.int(0, 1)))
   // Arboledas de 2 a 3 árboles juntos, como en las referencias (en el distrito, pocos árboles secos).
-  tryPlace(industrial ? 3 : 9, 200, (r) => {
+  tryPlace(by(9, 3, 8), 200, (r) => {
     const x = anyX(r, 2)
     const y = anyY(r, 2)
     const kind = () => (industrial ? 2 : r.int(0, 2))
@@ -383,8 +403,8 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
     }
     return ok
   })
-  tryPlace(industrial ? 12 : 8, 200, (r) => place('debris', anyX(r), anyY(r), 1, 1, r.int(0, 1)))
-  tryPlace(industrial ? 10 : 5, 160, (r) => place(r.next() < 0.6 ? 'barrel' : 'tires', anyX(r), anyY(r), 1, 1, 0))
+  tryPlace(by(8, 12, 5), 200, (r) => place('debris', anyX(r), anyY(r), 1, 1, r.int(0, 1)))
+  tryPlace(by(5, 10, 6), 160, (r) => place(r.next() < 0.6 ? 'barrel' : 'tires', anyX(r), anyY(r), 1, 1, 0))
 
   // Faroles a los lados de las carreteras (decoración) y alrededor de la plazoleta.
   for (let y = FOREST + 2; y < PLAZA.y - 4; y += 4) place('lamp', CX - 1, y, 1, 1, 0, Tile.GRASS)
