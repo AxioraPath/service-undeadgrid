@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Post, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, HttpCode, Post, UseGuards } from '@nestjs/common';
 import { seedBodySchema } from './seed';
 import { TestEndpointsGuard } from './test-endpoints.guard';
 import { TestingService } from './testing.service';
@@ -13,7 +13,9 @@ export class TestingController {
     return this.testing.telemetry();
   }
 
+  // La especificación pide HTTP 200 en todos los /api/test/* (Nest responde 201 por defecto a un POST).
   @Post('seed')
+  @HttpCode(200)
   seed(@Body() body: unknown) {
     const parsed = seedBodySchema.safeParse(body);
     if (!parsed.success) throw new BadRequestException(parsed.error.flatten());
