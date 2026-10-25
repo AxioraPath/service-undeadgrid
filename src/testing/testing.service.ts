@@ -3,8 +3,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { buildSyntheticMatches, SEED_CODE_PREFIX } from './seed';
 import { computeTelemetry, type Telemetry } from './telemetry';
 
-const BATCH = 1000;
-
 @Injectable()
 export class TestingService {
   constructor(private readonly prisma: PrismaService) {}
@@ -50,15 +48,28 @@ export class TestingService {
   async seed(matches: number, seed?: number): Promise<{ inserted: number; durationMs: number }> {
     const t0 = performance.now();
     const data = buildSyntheticMatches(matches, seed ?? Date.now() % 2 ** 31);
-    // One transaction, one multi-row INSERT per table. Synthetic rows do not need a WAL fsync on commit
-    // (synchronous_commit only applies to this transaction), which is most of the insert latency.
-    for (let i = 0; i < data.matches.length; i += BATCH) {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.$executeRaw`SET LOCAL synchronous_commit = off`;
-        await tx.matchHistory.createMany({ data: data.matches.slice(i, i + BATCH) });
-        await tx.matchPlayer.createMany({ data: data.players.slice(i * 2, (i + BATCH) * 2) });
-      });
-    }
+    // Two multi-row INSERT ... SELECT FROM unnest(...) statements in one transaction: a single round trip per
+    // table and no per-row parameters. synchronous_commit only applies to this transaction (no WAL fsync wait).
+    const m = data.matches;
+    const p = data.players;
+    await this.prisma.$transaction([
+      this.prisma.$executeRaw`SET LOCAL synchronous_commit = off`,
+      this.prisma.$executeRaw`
+        INSERT INTO match_history ("id", "code", "mapId", "difficulty", "seed", "durationS", "reason", "maxWave")
+        SELECT * FROM unnest(
+          ${m.map((x) => x.id)}::text[], ${m.map((x) => x.code)}::text[], ${m.map((x) => x.mapId)}::text[],
+          ${m.map((x) => x.difficulty)}::text[], ${m.map((x) => x.seed.toString())}::bigint[],
+          ${m.map((x) => x.durationS)}::int[], ${m.map((x) => x.reason)}::text[], ${m.map((x) => x.maxWave)}::int[])`,
+      this.prisma.$executeRaw`
+        INSERT INTO match_players ("id", "matchId", "slot", "name", "survivor", "isWinner", "coreHpEnd",
+                                   "kills", "zombieKills", "deaths", "structuresBuilt", "timeAliveS")
+        SELECT gen_random_uuid()::text, t.* FROM unnest(
+          ${p.map((x) => x.matchId)}::text[], ${p.map((x) => x.slot)}::int[], ${p.map((x) => x.name)}::text[],
+          ${p.map((x) => x.survivor)}::text[], ${p.map((x) => x.isWinner)}::boolean[],
+          ${p.map((x) => x.coreHpEnd)}::int[], ${p.map((x) => x.kills)}::int[], ${p.map((x) => x.zombieKills)}::int[],
+          ${p.map((x) => x.deaths)}::int[], ${p.map((x) => x.structuresBuilt)}::int[],
+          ${p.map((x) => x.timeAliveS)}::int[]) AS t`,
+    ]);
     return { inserted: data.matches.length, durationMs: Math.round(performance.now() - t0) };
   }
 
