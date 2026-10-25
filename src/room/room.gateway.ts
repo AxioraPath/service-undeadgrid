@@ -39,6 +39,8 @@ import {
   selectSurvivorSchema,
   setDifficultySchema,
   setMapSchema,
+  setModeSchema,
+  setTeamSchema,
 } from '../contracts/payloads';
 import { DomainError } from '../common/domain-error';
 import { RateLimiterService } from '../common/rate-limiter.service';
@@ -190,6 +192,15 @@ export class RoomGateway
 
   private now(): number {
     return this.rooms.now();
+  }
+
+  /** Mode switches and team changes can re-derive slots: keep each socket's cached slot in sync. */
+  private syncSocketSlots(room: Room): void {
+    for (const p of room.players.values()) {
+      if (!p.socketId) continue;
+      const sock = this.server.sockets.sockets.get(p.socketId);
+      if (sock) sock.data.slot = p.slot;
+    }
   }
 
   private emitState(room: Room): void {
@@ -480,6 +491,36 @@ export class RoomGateway
       const code = this.requireRoomCode(client);
       const { difficulty } = this.parse(setDifficultySchema, body);
       const room = this.rooms.setDifficulty(code, client.id, difficulty);
+      this.emitState(room);
+      return room.toSnapshot(this.now());
+    });
+  }
+
+  @SubscribeMessage('lobby:setMode')
+  async onSetMode(
+    @ConnectedSocket() client: AppSocket,
+    @MessageBody() body: unknown,
+  ): Promise<Ack<RoomSnapshot>> {
+    return this.handle(client, 'lobby:setMode', () => {
+      const code = this.requireRoomCode(client);
+      const { mode } = this.parse(setModeSchema, body);
+      const room = this.rooms.setMode(code, client.id, mode);
+      this.syncSocketSlots(room);
+      this.emitState(room);
+      return room.toSnapshot(this.now());
+    });
+  }
+
+  @SubscribeMessage('room:setTeam')
+  async onSetTeam(
+    @ConnectedSocket() client: AppSocket,
+    @MessageBody() body: unknown,
+  ): Promise<Ack<RoomSnapshot>> {
+    return this.handle(client, 'room:setTeam', () => {
+      const code = this.requireRoomCode(client);
+      const { team } = this.parse(setTeamSchema, body);
+      const room = this.rooms.setTeam(code, client.id, team);
+      this.syncSocketSlots(room);
       this.emitState(room);
       return room.toSnapshot(this.now());
     });

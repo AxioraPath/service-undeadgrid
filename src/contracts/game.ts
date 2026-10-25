@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { Slot } from '../config/game.config';
+import type { Slot, Team } from '../config/game.config';
 
 /**
  * Contrato de la simulación de combate (servidor autoritativo a 30 ticks/s).
@@ -75,9 +75,10 @@ export interface GameMapDto {
   /** Capa de suelo (Ground) por casilla, solo visual. */
   ground: number[];
   objects: { kind: string; x: number; y: number; w: number; h: number; variant: number }[];
-  bases: Record<Slot, RectDto>;
-  cores: Record<Slot, PointDto>;
-  crates: Record<Slot, PointDto>;
+  /** Keyed by TEAM (a team's two players share its base, core and crate). */
+  bases: Record<Team, RectDto>;
+  cores: Record<Team, PointDto>;
+  crates: Record<Team, PointDto>;
   spawns: PointDto[];
   /** Punto (en casillas) de la caja de armamento del centro. */
   armory: PointDto;
@@ -93,6 +94,8 @@ export interface StockDto {
 export interface GamePlayerDto {
   id: string;
   slot: Slot;
+  /** Team of the player (1v1: same number as the slot). */
+  team: Team;
   name: string;
   survivor: string;
   x: number;
@@ -136,7 +139,7 @@ export interface GamePlayerDto {
 export type ZombieTuple = [number, number, number, number, number, number, number, number];
 /** [id, x, y, vx, vy, tipo(0 bala | 1 sniper | 2 cohete)] */
 export type BulletTuple = [number, number, number, number, number, number];
-/** [casilla, tipo(0 madera | 1 reforzada | 2 trampa), hp, maxHp, dueño, orientación('h' | 'v')] */
+/** [casilla, tipo(0 madera | 1 reforzada | 2 trampa | 3 torreta), hp, maxHp, dueño (SLOT del que la construyó; su equipo = teamOf(slot)), orientación('h' | 'v')] */
 export type StructureTuple = [number, number, number, number, Slot, 'h' | 'v'];
 
 export type GameEventDto =
@@ -150,7 +153,8 @@ export type GameEventDto =
   | { type: 'built'; x: number; y: number; what: string }
   | { type: 'rejected'; slot: Slot; reason: string }
   | { type: 'phase'; label: string }
-  | { type: 'coreHit'; slot: Slot }
+  /** `slot` is the legacy name of `team` (same value); both are the team whose core was hit. */
+  | { type: 'coreHit'; slot: Team; team: Team }
   | { type: 'armoryOpened'; slot: Slot; weapon: 'smg' | 'sniper' | 'rocket' }
   | { type: 'armoryReady'; weapon: 'smg' | 'sniper' | 'rocket' };
 
@@ -165,8 +169,10 @@ export interface GameStateDto {
   zombies: ZombieTuple[];
   bullets: BulletTuple[];
   structures: StructureTuple[];
-  cores: Record<Slot, number>;
-  crates: Record<Slot, StockDto>;
+  /** Core HP keyed by TEAM (1v1: team == slot). */
+  cores: Record<Team, number>;
+  /** Shared crate stock keyed by TEAM. */
+  crates: Record<Team, StockDto>;
   /** Caja de armamento: disponible, quién la abrió y segundos que lleva abriéndola cada slot. */
   armory: { available: boolean; openedBy: Slot | null; progress: Partial<Record<Slot, number>> };
   /** Barriles y tanques del mapa (índice en `map.objects`): los que explotaron y los dañados [índice, hp, maxHp]. */
@@ -175,7 +181,8 @@ export interface GameStateDto {
   turrets: [number, number, number, number, number, number][];
   /** Eventos ocurridos desde el último estado (efectos visuales). */
   events: GameEventDto[];
-  result: { winner: Slot | 0; reason: string; durationS: number; byTime: boolean } | null;
+  /** `winner` is a TEAM (1v1: same as the winning slot); 0 = draw. */
+  result: { winner: Team | 0; reason: string; durationS: number; byTime: boolean } | null;
 }
 
 export interface GameSyncData {

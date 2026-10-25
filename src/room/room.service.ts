@@ -1,8 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import {
   LIFECYCLE,
-  ROOM_CAPACITY,
-  type Slot,
+  MODE_CAPACITY,
+  type GameMode,
+  type Team,
 } from '../config/game.config';
 import { ErrorCode, type MatchResult } from '../contracts';
 import { DomainError } from '../common/domain-error';
@@ -229,6 +230,46 @@ export class RoomService {
     return room;
   }
 
+  /**
+   * Host-only, lobby-only. Switches 1v1 <-> 2v2. Rejected with TOO_MANY_PLAYERS when the room
+   * already holds more players than the target mode allows (2v2 -> 1v1 with > 2 players).
+   * Switching 2v2 -> 1v1 re-seats players into slots 1 and 2; every "ready" flag is cleared.
+   */
+  setMode(code: string, socketId: string, mode: GameMode): Room {
+    const room = this.requireHostEditable(code, socketId);
+    if (room.mode === mode) return room;
+    if (room.players.size > MODE_CAPACITY[mode]) {
+      throw new DomainError(
+        ErrorCode.TOO_MANY_PLAYERS,
+        `Hay demasiados jugadores para ${mode}: máximo ${MODE_CAPACITY[mode]}`,
+      );
+    }
+    room.applyMode(mode);
+    this.logger.log(`Sala ${room.code}: modo ${mode}`);
+    return room;
+  }
+
+  /**
+   * 2v2 lobby only. Moves the caller to `team` (max 2 per team). The slot is derived from
+   * team + seat (team 1 -> slots 1, 3; team 2 -> slots 2, 4); the player keeps ready/survivor.
+   */
+  setTeam(code: string, socketId: string, team: Team): Room {
+    const { room, player } = this.playerInRoom(code, socketId);
+    if (room.status !== 'lobby') {
+      throw new DomainError(ErrorCode.BAD_STATE, 'Los equipos solo se cambian en el lobby');
+    }
+    if (room.mode !== '2v2') {
+      throw new DomainError(ErrorCode.BAD_STATE, 'Los equipos solo existen en el modo 2v2');
+    }
+    if (player.team === team) return room;
+    const slot = room.freeSeatOf(team);
+    if (slot === null) {
+      throw new DomainError(ErrorCode.TEAM_FULL, 'Ese equipo ya está completo');
+    }
+    room.moveToSlot(player, slot);
+    return room;
+  }
+
   /** Valida que el socket sea el host y que la sala esté en un estado editable. */
   private requireHostEditable(code: string, socketId: string): Room {
     const { room, player } = this.playerInRoom(code, socketId);
@@ -256,8 +297,11 @@ export class RoomService {
     if (room.status !== 'lobby') {
       throw new DomainError(ErrorCode.BAD_STATE, 'La partida no puede iniciarse ahora');
     }
-    if (room.players.size !== ROOM_CAPACITY) {
+    if (room.players.size !== room.capacity) {
       throw new DomainError(ErrorCode.BAD_STATE, 'Faltan jugadores para empezar');
+    }
+    if (!room.teamsBalanced()) {
+      throw new DomainError(ErrorCode.BAD_STATE, 'Cada equipo debe tener 2 jugadores');
     }
     if (!room.allReady()) {
       throw new DomainError(ErrorCode.BAD_STATE, 'No todos los jugadores están listos');
@@ -397,13 +441,13 @@ export class RoomService {
   requestRematch(code: string, socketId: string): { room: Room; started: boolean } {
     const { room, player } = this.requireResults(code, socketId);
     const everyoneHere =
-      room.players.size === ROOM_CAPACITY && [...room.players.values()].every((p) => p.connected);
+      room.players.size === room.capacity && [...room.players.values()].every((p) => p.connected);
     if (!everyoneHere) {
       throw new DomainError(ErrorCode.BAD_STATE, 'Tu rival ya no está en la sala');
     }
     room.rematch.add(player.slot);
     this.bump(room);
-    if (room.rematch.size === ROOM_CAPACITY) {
+    if (room.rematch.size === room.capacity) {
       room.resetForRematch(randomSeed());
       this.logger.log(`Sala ${room.code}: revancha -> preparación (seed ${room.seed})`);
       return { room, started: true };
@@ -477,16 +521,23 @@ export class RoomService {
     voluntary: boolean,
   ): { room: Room; player: Player; closed: boolean } {
     room.rematch.clear();
-    // Si la partida está en curso y un jugador se va, el rival gana por abandono.
+    // Match in progress: when a player's whole team is gone, the rival team wins by abandonment.
+    // In 2v2 a team that still has a player keeps playing (the leaver's character stays idle).
     if (room.status === 'combat' || room.status === 'preparation') {
-      const rivalSlot: Slot = player.slot === 1 ? 2 : 1;
-      const rival = room.players.get(rivalSlot);
+      const team = player.team;
+      const rivalTeam: Team = team === 1 ? 2 : 1;
       room.removePlayer(player.slot);
+      if (room.playersOfTeam(team).length > 0) {
+        room.reassignHostIfNeeded();
+        this.bump(room);
+        return { room, player, closed: false };
+      }
       this.finish(room, {
-        winner: rival ? rivalSlot : null,
+        winner: room.playersOfTeam(rivalTeam).length > 0 ? rivalTeam : null,
         reason: 'opponent_left',
         cores: { ...room.cores },
       });
+      room.reassignHostIfNeeded();
       // La sala queda en results; se limpiará por TTL.
       return { room, player, closed: false };
     }

@@ -1,13 +1,20 @@
 import {
   CORE_HP,
+  DEFAULT_MODE,
   DIFFICULTIES,
   MAP_IDS,
   MATCH_DURATION,
+  MODE_CAPACITY,
   PHASES,
-  ROOM_CAPACITY,
   SLOTS,
+  TEAM_SIZE,
+  TEAMS,
+  slotFor,
+  slotsOf,
+  type GameMode,
   type PhaseDef,
   type Slot,
+  type Team,
 } from '../config/game.config';
 import type {
   ChatMessageSnapshot,
@@ -48,13 +55,14 @@ export class Room {
   seed: number;
   mapId: string = MAP_IDS[0];
   difficulty: string = DIFFICULTIES[0];
+  mode: GameMode = DEFAULT_MODE;
   hostSlot: Slot = SLOTS[0];
 
   readonly players = new Map<Slot, Player>();
   readonly chat: ChatMessageSnapshot[] = [];
 
-  /** Vida de cada núcleo (autoritativa; durante el combate se copia del motor). */
-  cores: Record<Slot, number> = { 1: CORE_HP, 2: CORE_HP };
+  /** HP of each TEAM's shared core (authoritative; copied from the engine during combat). */
+  cores: Record<Team, number> = { 1: CORE_HP, 2: CORE_HP };
 
   /** Simulación de la partida (src/game/engine). Existe desde que empieza el combate. */
   match: MatchState | null = null;
@@ -87,8 +95,17 @@ export class Room {
 
   // ---- Consultas ----
 
+  /** Max players for the current mode (1v1: 2, 2v2: 4). */
+  get capacity(): number {
+    return MODE_CAPACITY[this.mode];
+  }
+
   get isFull(): boolean {
-    return this.players.size >= ROOM_CAPACITY;
+    return this.players.size >= this.capacity;
+  }
+
+  playersOfTeam(team: Team): Player[] {
+    return [...this.players.values()].filter((p) => p.team === team);
   }
 
   get host(): Player | undefined {
@@ -109,12 +126,59 @@ export class Room {
     return undefined;
   }
 
-  /** Primer slot libre (1 antes que 2). */
+  /**
+   * Slot for a new player. 1v1: first free of 1, 2. 2v2: joins the team with fewer players
+   * (ties -> team 1) in its first free seat, so teams stay balanced (join order 1, 2, 3, 4).
+   */
   freeSlot(): Slot | null {
-    for (const s of SLOTS) {
-      if (!this.players.has(s)) return s;
+    if (this.mode === '1v1') {
+      for (const s of slotsOf('1v1')) if (!this.players.has(s)) return s;
+      return null;
+    }
+    const byLoad = [...TEAMS].sort((a, b) => this.playersOfTeam(a).length - this.playersOfTeam(b).length || a - b);
+    for (const team of byLoad) {
+      const slot = this.freeSeatOf(team);
+      if (slot !== null) return slot;
     }
     return null;
+  }
+
+  /** First free slot of a team (seat 0 before seat 1), or null if the team is full. */
+  freeSeatOf(team: Team): Slot | null {
+    for (const seat of [0, 1] as const) {
+      const slot = slotFor(team, seat);
+      if (!this.players.has(slot)) return slot;
+    }
+    return null;
+  }
+
+  /** Moves a seated player to another (free) slot, keeping host/rematch bookkeeping consistent. */
+  moveToSlot(player: Player, slot: Slot): void {
+    if (player.slot === slot) return;
+    this.players.delete(player.slot);
+    if (player.isHost) this.hostSlot = slot;
+    player.slot = slot;
+    this.players.set(slot, player);
+    this.touch();
+  }
+
+  /**
+   * Switches the mode. 2v2 -> 1v1 re-seats the (at most 2) players into slots 1 and 2 keeping
+   * their relative order, so slot == team again. Validation (host, lobby, capacity) is the caller's job.
+   */
+  applyMode(mode: GameMode): void {
+    this.mode = mode;
+    if (mode === '1v1') {
+      const ordered = [...this.players.values()].sort((a, b) => a.slot - b.slot);
+      this.players.clear();
+      ordered.forEach((p, i) => {
+        p.slot = (i + 1) as Slot;
+        this.players.set(p.slot, p);
+        if (p.isHost) this.hostSlot = p.slot;
+      });
+    }
+    for (const p of this.players.values()) p.ready = false;
+    this.touch();
   }
 
   get connectedCount(): number {
@@ -176,9 +240,15 @@ export class Room {
     this.touch();
   }
 
+  /** 2v2: exactly TEAM_SIZE players on each team. 1v1: always true (one per slot). */
+  teamsBalanced(): boolean {
+    if (this.mode === '1v1') return true;
+    return TEAMS.every((t) => this.playersOfTeam(t).length === TEAM_SIZE);
+  }
+
   /** ¿Todos los asientos ocupados, conectados y listos? (condición de arranque). */
   allReady(): boolean {
-    if (this.players.size !== ROOM_CAPACITY) return false;
+    if (this.players.size !== this.capacity) return false;
     for (const p of this.players.values()) {
       if (!p.connected || !p.ready) return false;
     }
@@ -187,7 +257,7 @@ export class Room {
 
   /** ¿Todos confirmaron superviviente? (condición para salir de selección). */
   allSurvivorsConfirmed(): boolean {
-    if (this.players.size !== ROOM_CAPACITY) return false;
+    if (this.players.size !== this.capacity) return false;
     for (const p of this.players.values()) {
       if (!p.survivorConfirmed) return false;
     }
@@ -222,7 +292,7 @@ export class Room {
   }
 
   /** Aplica daño al núcleo objetivo. Devuelve true si llegó a 0. */
-  damageCore(target: Slot, amount: number): boolean {
+  damageCore(target: Team, amount: number): boolean {
     this.cores[target] = Math.max(0, this.cores[target] - Math.floor(amount));
     this.touch();
     return this.cores[target] === 0;
@@ -285,6 +355,8 @@ export class Room {
       seed: this.seed,
       mapId: this.mapId,
       difficulty: this.difficulty,
+      mode: this.mode,
+      capacity: this.capacity,
       hostSlot: this.hostSlot,
       players,
       combat: this.status === 'combat' ? this.combatSnapshot(now) : null,

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { Room } from '../domain/room';
-import { CORE_HP, MAP_NAMES, type Slot } from '../config/game.config';
+import { CORE_HP, MAP_NAMES, slotsOf, teamOf } from '../config/game.config';
 import type { MatchOverPayload, MatchPlayerStats } from '../contracts';
 import { ProgressionService } from '../progression/progression.service';
 import { MIN_MATCH_DURATION_S, computeMatchXp } from '../progression/xp';
@@ -24,10 +24,13 @@ const EMPTY: CombatStats = { kills: 0, zombieKills: 0, deaths: 0, structuresBuil
 export function matchSummary(room: Room): {
   durationS: number;
   maxWave: number;
-  bySlot: Record<Slot, CombatStats>;
+  /** Keyed by slot: 1-2 in 1v1, 1-4 in 2v2. */
+  bySlot: Record<number, CombatStats>;
 } {
   const match = room.match;
-  const bySlot: Record<Slot, CombatStats> = { 1: { ...EMPTY }, 2: { ...EMPTY } };
+  const bySlot: Record<number, CombatStats> = Object.fromEntries(
+    slotsOf(room.mode).map((slot) => [slot, { ...EMPTY }]),
+  );
   if (!match) return { durationS: 0, maxWave: 0, bySlot };
   for (const p of match.players) {
     bySlot[p.slot] = {
@@ -49,9 +52,11 @@ export function matchOverDetails(room: Room): Omit<MatchOverPayload, 'xp'> {
   const result = room.result;
   const { durationS, bySlot } = matchSummary(room);
   const stats: Record<number, MatchPlayerStats> = {};
-  for (const slot of [1, 2] as const) {
-    const hp = result?.cores[slot] ?? room.cores[slot];
+  for (const slot of slotsOf(room.mode)) {
+    const team = teamOf(slot);
+    const hp = result?.cores[team] ?? room.cores[team];
     stats[slot] = {
+      team,
       zombieKills: bySlot[slot].zombieKills,
       structuresBuilt: bySlot[slot].structuresBuilt,
       coreDamageDealt: room.match?.coreDamageDealt[slot] ?? 0,
@@ -75,7 +80,7 @@ export function matchXpBySlot(room: Room): Record<number, number> {
   if (!result) return out;
   const { durationS, bySlot } = matchSummary(room);
   for (const p of room.players.values()) {
-    const won = result.winner === p.slot;
+    const won = result.winner === p.team;
     const c = bySlot[p.slot];
     out[p.slot] = computeMatchXp({
       won,
@@ -130,8 +135,8 @@ export class MatchStatsService {
                 slot: p.slot,
                 name: p.name,
                 survivor: p.survivor,
-                isWinner: result.winner === p.slot,
-                coreHpEnd: room.cores[p.slot] ?? 0,
+                isWinner: result.winner === p.team,
+                coreHpEnd: room.cores[p.team] ?? 0,
                 ...bySlot[p.slot],
               })),
             },
@@ -141,7 +146,7 @@ export class MatchStatsService {
         // Actualiza stats de cada jugador autenticado.
         for (const p of players) {
           if (!p.userId) continue;
-          const won = result.winner === p.slot;
+          const won = result.winner === p.team;
           const draw = result.winner === null;
           const lost = !won && !draw;
           const combat = bySlot[p.slot];

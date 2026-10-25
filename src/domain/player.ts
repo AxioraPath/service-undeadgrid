@@ -1,5 +1,5 @@
-import type { Slot } from '../config/game.config';
-import { DEFAULT_SURVIVOR } from '../config/game.config';
+import type { Slot, Team } from '../config/game.config';
+import { DEFAULT_SURVIVOR, teamOf } from '../config/game.config';
 import type { PlayerSnapshot } from '../contracts';
 
 /**
@@ -13,7 +13,8 @@ export class Player {
   /** Socket.IO id del cliente conectado ahora mismo; null si está desconectado. */
   socketId: string | null;
   name: string;
-  readonly slot: Slot;
+  /** Seat. Mutable only because 2v2 lobby team changes / mode switches re-derive it (use Room.moveToSlot). */
+  slot: Slot;
   isHost: boolean;
   ready = false;
   survivor: string = DEFAULT_SURVIVOR;
@@ -41,6 +42,10 @@ export class Player {
     this.userId = params.userId ?? null;
   }
 
+  get team(): Team {
+    return teamOf(this.slot);
+  }
+
   get connected(): boolean {
     return this.socketId !== null && this.disconnectedAt === null;
   }
@@ -62,6 +67,7 @@ export class Player {
       id: this.sessionId,
       name: this.name,
       slot: this.slot,
+      team: this.team,
       isHost: this.isHost,
       ready: this.ready,
       survivor: this.survivor,

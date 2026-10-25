@@ -9,6 +9,8 @@ import type {
   SelectSurvivorPayload,
   SetDifficultyPayload,
   SetMapPayload,
+  SetModePayload,
+  SetTeamPayload,
 } from './payloads';
 import type { GameCommandPayload, GameInputPayload, GameStateDto, GameSyncData } from './game';
 import type {
@@ -21,7 +23,7 @@ import type {
 export interface JoinedData {
   /** Token de sesión del jugador (persistir en el cliente para reconectar). */
   sessionId: string;
-  /** Slot asignado (1 azul, 2 rojo). */
+  /** Assigned slot (1v1: 1 blue / 2 red; 2v2: 1 and 3 blue team, 2 and 4 red team). */
   slot: Slot;
   /** Si este jugador es el host de la sala. */
   isHost: boolean;
@@ -50,6 +52,10 @@ export interface ClientToServerEvents {
     p: SetDifficultyPayload,
     ack: (r: Ack<RoomSnapshot>) => void,
   ) => void;
+  /** Host only, lobby only: switch between '1v1' and '2v2'. Slots may be remapped; re-read yours from the snapshot by `id`. */
+  'lobby:setMode': (p: SetModePayload, ack: (r: Ack<RoomSnapshot>) => void) => void;
+  /** 2v2 lobby only: move to a team (max 2 per team). The slot is re-derived from team + seat. */
+  'room:setTeam': (p: SetTeamPayload, ack: (r: Ack<RoomSnapshot>) => void) => void;
   'lobby:start': (ack: (r: Ack<RoomSnapshot>) => void) => void;
   /** Back to the lobby for both players. Only valid in `results`. */
   'lobby:backToLobby': (ack: (r: Ack<RoomSnapshot>) => void) => void;

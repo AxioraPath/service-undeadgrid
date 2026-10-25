@@ -1,4 +1,4 @@
-import { BASE_SIZE, MAP_H, MAP_W, type Slot } from './constants'
+import { BASE_SIZE, MAP_H, MAP_W, type Team } from './constants'
 import { createRng, type Rng } from './rng'
 
 /** Capa de colisión: qué ocupa cada casilla. */
@@ -111,10 +111,10 @@ export interface GameMapData {
   tiles: Uint8Array
   ground: Uint8Array
   objects: MapObject[]
-  bases: Record<Slot, Rect>
+  bases: Record<Team, Rect>
   /** Casilla superior izquierda del núcleo (ocupa 2 × 2). */
-  cores: Record<Slot, Point>
-  crates: Record<Slot, Point>
+  cores: Record<Team, Point>
+  crates: Record<Team, Point>
   spawns: Point[]
   /** Punto (en casillas) de la caja de armamento, en el centro de la plazoleta. */
   armory: Point
@@ -137,7 +137,7 @@ const idx = (x: number, y: number) => y * MAP_W + x
 export function isMapReachable(map: GameMapData): boolean {
   const blocked = (x: number, y: number) =>
     isSolidTileKind(map.tiles[idx(x, y)]) ||
-    ([1, 2] as Slot[]).some((s) => x >= map.cores[s].x && x < map.cores[s].x + 2 && y >= map.cores[s].y && y < map.cores[s].y + 2)
+    ([1, 2] as Team[]).some((s) => x >= map.cores[s].x && x < map.cores[s].x + 2 && y >= map.cores[s].y && y < map.cores[s].y + 2)
 
   const start = { x: map.bases[1].x + 1, y: map.bases[1].y + 1 }
   const seen = new Uint8Array(MAP_W * MAP_H)
@@ -219,20 +219,20 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
     }
 
   // 2. Bases 8 × 8 en esquinas opuestas, con núcleo al centro y caja al lado.
-  const bases: Record<Slot, Rect> = {
+  const bases: Record<Team, Rect> = {
     1: { x: FOREST + 1, y: FOREST + 1, w: BASE_SIZE, h: BASE_SIZE },
     2: { x: MAP_W - FOREST - 1 - BASE_SIZE, y: MAP_H - FOREST - 1 - BASE_SIZE, w: BASE_SIZE, h: BASE_SIZE },
   }
-  const cores: Record<Slot, Point> = {
+  const cores: Record<Team, Point> = {
     1: { x: bases[1].x + 3, y: bases[1].y + 3 },
     2: { x: bases[2].x + 3, y: bases[2].y + 3 },
   }
   // Una casilla libre entre núcleo y caja para poder pisarla; la de J2 va en espejo.
-  const crates: Record<Slot, Point> = {
+  const crates: Record<Team, Point> = {
     1: { x: cores[1].x + 3, y: cores[1].y },
     2: { x: cores[2].x - 2, y: cores[2].y + 1 },
   }
-  for (const s of [1, 2] as Slot[]) {
+  for (const s of [1, 2] as Team[]) {
     const b = bases[s]
     for (let y = b.y; y < b.y + b.h; y++)
       for (let x = b.x; x < b.x + b.w; x++) {
@@ -276,7 +276,7 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
 
   // 3. Obstáculos en espejo para que el mapa sea justo.
   const reserved = (x: number, y: number) =>
-    ([1, 2] as Slot[]).some((s) => {
+    ([1, 2] as Team[]).some((s) => {
       const b = bases[s]
       return x >= b.x - 1 && x <= b.x + b.w && y >= b.y - 1 && y <= b.y + b.h
     }) ||

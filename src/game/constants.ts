@@ -10,7 +10,15 @@ export const BASE_SIZE = 8
 export const TICK_RATE = 30
 export const TICK_DT = 1 / TICK_RATE
 
-export type Slot = 1 | 2
+/** Player seat. 1v1 uses 1 and 2; 2v2 uses 1-4. */
+export type Slot = 1 | 2 | 3 | 4
+/** Team. In 1v1 team == slot. In 2v2: team 1 = slots 1 and 3, team 2 = slots 2 and 4. */
+export type Team = 1 | 2
+
+export const teamOf = (slot: Slot): Team => (slot % 2 === 1 ? 1 : 2)
+/** Seat index inside the team: 0 for slots 1/2, 1 for slots 3/4. */
+export const seatOf = (slot: Slot): 0 | 1 => (slot > 2 ? 1 : 0)
+export const slotFor = (team: Team, seat: 0 | 1): Slot => ((seat * 2 + team) as Slot)
 
 export interface PhaseDef {
   id: 'prep' | 'wave1' | 'wave2' | 'horde'

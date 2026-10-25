@@ -84,13 +84,13 @@ model MatchHistory {
   @@map("match_history")
 }
 
-/// Participación de un jugador en una partida (2 por partida en 1v1).
+/// Participación de un jugador en una partida (2 en 1v1, 4 en 2v2).
 model MatchPlayer {
   id        String       @id @default(uuid())
   matchId   String
   match     MatchHistory @relation(fields: [matchId], references: [id], onDelete: Cascade)
   userId    String?      // null si el jugador era invitado sin cuenta
-  slot      Int          // 1 (azul) o 2 (rojo)
+  slot      Int          // 1-2 en 1v1; 1-4 en 2v2 (equipo 1 = slots 1 y 3, equipo 2 = slots 2 y 4)
   name      String
   survivor  String
   isWinner  Boolean      @default(false)

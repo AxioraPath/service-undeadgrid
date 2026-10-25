@@ -19,6 +19,35 @@ servidor autoritativo (`service-undeadgrid`). Todos los tipos viven en
 
 ---
 
+## Modos de juego: 1v1 y 2v2
+
+Toda sala tiene `mode: '1v1' | '2v2'` (por defecto `'1v1'`) y `capacity` (2 o 4); ambos viajan en
+`RoomSnapshot`. El **host** cambia el modo en el lobby con `lobby:setMode`.
+
+- **Slots y equipos.** `Slot = 1|2|3|4`, `Team = 1|2`. Equipo 1 (azul) = slots **1 y 3**; equipo 2 (rojo) =
+  slots **2 y 4**. En 1v1 solo existen los slots 1 y 2 y `team == slot` (todo lo que iba por slot 1/2 sigue igual).
+  Cada `PlayerSnapshot` y cada `GamePlayerDto` trae `slot` **y** `team`. El slot se **deriva** de equipo + asiento:
+  `slot = team + 2 * seat` (seat 0 o 1).
+- **Una base, un núcleo y una caja por equipo.** Los dos compañeros comparten la base, el núcleo, la zona de
+  construcción y el stock de la caja. Por eso todo lo que antes iba "por slot" y era del lado/base va ahora **por
+  equipo** (claves `1|2`): `map.bases`, `map.cores`, `map.crates`, `game:state.cores`, `game:state.crates`,
+  `CombatSnapshot.cores`, `MatchResult.cores`. En 1v1 son idénticos a lo de siempre.
+- **Inventarios.** Siguen siendo **por jugador** (madera, metal, botiquines, cartuchos, arma pesada, torretas).
+  Lo único compartido es el **stock de la caja** del equipo (`crates[team]`): lo que saca uno ya no está para el
+  otro. La caja de armamento del centro la abre cada jugador por separado (progreso por slot).
+- **Aparición.** Se reutilizan los mismos mapas. Cada equipo aparece dentro de su base junto al núcleo: el primer
+  asiento (slot 1 / 2) en la casilla de siempre y el segundo (slot 3 / 4) en la casilla contigua dentro de la misma base.
+- **Fuego amigo desactivado.** Las balas, cohetes, trampas y torretas de un equipo no dañan a sus compañeros ni a
+  sus estructuras, y las paredes propias/del compañero no frenan las balas del equipo. Los zombis atacan a ambos equipos.
+  Cada estructura conserva `owner` (slot que la construyó, para estadísticas) y pertenece al equipo `teamOf(owner)`.
+- **Victoria.** Un equipo pierde cuando su núcleo compartido está destruido **y** ninguno de sus jugadores puede
+  reaparecer (si el núcleo cae, los que mueren ya no reaparecen). Por tiempo (240 s): gana el núcleo con más vida;
+  si empatan, el equipo con más `kills + zombieKills` sumados; si no, empate.
+- **Abandono en 2v2.** Si se va un jugador y su compañero sigue en la sala, la partida **continúa** (su personaje
+  queda inmóvil). Solo cuando se va **todo** su equipo gana el rival con `reason: 'opponent_left'`.
+
+---
+
 ## Máquina de estados de la sala
 
 ```
@@ -48,7 +77,9 @@ El servidor es el **único** que cambia de estado. El cliente nunca fuerza una f
 |--------------------|-----------------------------------------------------------|
 | `VALIDATION`       | El payload no pasó la validación de esquema.              |
 | `ROOM_NOT_FOUND`   | No existe una sala con ese código.                        |
-| `ROOM_FULL`        | La sala ya tiene 2 jugadores.                             |
+| `ROOM_FULL`        | La sala está llena (2 en 1v1, 4 en 2v2). Un 5º jugador se rechaza con este código. |
+| `TEAM_FULL`        | `room:setTeam` a un equipo que ya tiene 2 jugadores.      |
+| `TOO_MANY_PLAYERS` | `lobby:setMode` a un modo con menos capacidad que los jugadores actuales (2v2 → 1v1 con más de 2). |
 | `ROOM_CLOSED`      | La sala fue cerrada por el servidor.                      |
 | `NAME_INVALID`     | Nombre vacío o inválido.                                  |
 | `CODE_INVALID`     | Código con formato incorrecto.                            |
@@ -69,7 +100,7 @@ El servidor es el **único** que cambia de estado. El cliente nunca fuerza una f
 > Los eventos sin payload no llevan el argumento `payload`.
 
 ### `lobby:create`
-Crea una sala y entra como **host** en el slot 1 (base azul).
+Crea una sala (modo `1v1`) y entra como **host** en el slot 1 (equipo 1, base azul).
 
 - **Payload:** `{ name: string; survivor?: string }`
 - **Ack:** `Ack<JoinedData>` → `{ sessionId, slot, isHost, room }`
@@ -82,7 +113,10 @@ de un asiento desconectado.
 
 - **Payload:** `{ code: string; name: string; survivor?: string; sessionId?: string }`
 - **Ack:** `Ack<JoinedData>`
-- **Errores:** `ROOM_NOT_FOUND`, `ROOM_FULL`, `BAD_STATE` (partida ya iniciada), `ALREADY_IN_ROOM`.
+- **Errores:** `ROOM_NOT_FOUND`, `ROOM_FULL` (también el 5º jugador en 2v2), `BAD_STATE` (partida ya iniciada), `ALREADY_IN_ROOM`.
+- **Slot asignado:** 1v1 → primer slot libre de 1, 2. 2v2 → entra al equipo con menos jugadores (empate → equipo 1)
+  en su primer asiento libre; con 4 jugadores el orden de llegada da slots 1, 2, 3, 4 (equipos 1, 2, 1, 2).
+  La reconexión con `sessionId` devuelve el mismo slot/equipo.
 - **Push asociado:** `lobby:playerJoined` (o `lobby:playerReconnected`) + `lobby:state` al resto.
 
 ### `lobby:leave`
@@ -114,6 +148,26 @@ a `preparation` y programa el inicio del combate.
 - **Payload:** *(ninguno)* · **Ack:** `Ack<RoomSnapshot>` · **Push:** `lobby:state`
 - **Errores:** `BAD_STATE` si no está en `selection`.
 
+### `lobby:setMode` (nuevo)
+Solo el **host** y solo en `lobby`. Cambia entre 1v1 y 2v2.
+
+- **Payload:** `{ mode: '1v1' | '2v2' }` · **Ack:** `Ack<RoomSnapshot>` · **Push:** `lobby:state`
+- **Errores:** `NOT_HOST`, `BAD_STATE` (fuera del lobby), `VALIDATION` (modo desconocido),
+  `TOO_MANY_PLAYERS` (2v2 → 1v1 con más de 2 jugadores; el host debe esperar a que salgan).
+- Mismo modo que el actual: no-op (devuelve el snapshot).
+- **Efectos:** `capacity` pasa a 2 o 4 y se **limpian los `ready`** de todos. De 1v1 a 2v2 los jugadores conservan
+  slot (1 y 2). De 2v2 a 1v1 (≤ 2 jugadores) se **reasientan en los slots 1 y 2** conservando el orden, y `hostSlot`
+  se actualiza: el cliente debe **releer su propio `slot`/`team` del snapshot buscándose por `id`** (= `sessionId`).
+
+### `room:setTeam` (nuevo)
+Un jugador elige equipo. Solo en `lobby` y solo en modo `2v2`.
+
+- **Payload:** `{ team: 1 | 2 }` · **Ack:** `Ack<RoomSnapshot>` · **Push:** `lobby:state`
+- **Errores:** `BAD_STATE` (fuera del lobby o sala en 1v1), `TEAM_FULL` (el equipo ya tiene 2), `VALIDATION`.
+- Pedir el equipo en el que ya estás es un no-op. Si cambias, tu **slot cambia** (equipo 1 → slot 1 o 3; equipo 2 →
+  slot 2 o 4, el primer asiento libre) y, si eres host, `hostSlot` te sigue. Se conservan `ready` y superviviente.
+  Relee tu slot del snapshot (por `id`).
+
 ### `lobby:setMap` / `lobby:setDifficulty`
 Solo el **host** y solo en `lobby`.
 
@@ -122,7 +176,8 @@ Solo el **host** y solo en `lobby`.
 - **Errores:** `NOT_HOST`, `BAD_STATE`.
 
 ### `lobby:start`
-El **host** inicia la partida. Requiere sala llena (2), ambos conectados y listos.
+El **host** inicia la partida. Requiere sala llena (`capacity`: 2 en 1v1, **4 en 2v2 con 2 jugadores por equipo**),
+todos conectados y listos (si no: `BAD_STATE` "Faltan jugadores para empezar" / "No todos los jugadores están listos").
 El superviviente ya se eligió en el lobby (`lobby:selectSurvivor`), así que pasa
 directo a `preparation` (lobby → selection → preparation en el mismo paso) y el combate
 arranca tras la cuenta regresiva. Si alguien sale mientras la sala está en `selection`,
@@ -137,7 +192,7 @@ el doble.
 - **Errores:** `NOT_HOST`, `BAD_STATE`.
 
 ### `lobby:backToLobby`
-Vuelve al lobby **para ambos jugadores**. Solo en `results`. Limpia la partida,
+Vuelve al lobby **para todos los jugadores** (2 o 4; conserva modo y equipos). Solo en `results`. Limpia la partida,
 el resultado, los flags de listo/confirmación y las peticiones de revancha;
 conserva mapa, dificultad y jugadores. Salir de la sala por completo sigue siendo `lobby:leave`.
 
@@ -146,13 +201,13 @@ conserva mapa, dificultad y jugadores. Salir de la sala por completo sigue siend
 - **Errores:** `BAD_STATE` (fuera de `results`).
 
 ### `match:rematchRequest`
-Pide revancha. Solo en `results` y con ambos jugadores conectados. Cuando **ambos**
-la piden, la sala pasa a `preparation` con el mismo mapa, dificultad y supervivientes
+Pide revancha. Solo en `results` y con la sala completa y conectada (2 en 1v1, 4 en 2v2). Cuando **todos**
+(2 o 4) la piden, la sala pasa a `preparation` con el mismo mapa, dificultad y supervivientes
 (confirmados), **semilla nueva**, y tras 3 s arranca el combate por el camino normal
 (`combat:phase`, `game:state`...). La partida anterior ya fue persistida: no se cuenta dos veces.
 
 - **Payload:** *(ninguno)* · **Ack:** `Ack<void>`
-- **Push:** `match:rematchState` siempre; si ambos pidieron: `match:rematchState { requested: [] }` + `lobby:state` (status `preparation`).
+- **Push:** `match:rematchState` siempre; si ambos pidieron: `match:rematchState { requested: [] }` + `lobby:state` (status `preparation`). `requested` contiene slots (1-4).
 - **Errores:** `BAD_STATE` (fuera de `results`, o "Tu rival ya no está en la sala").
 
 ### `match:rematchCancel`
@@ -221,7 +276,7 @@ Medición de latencia una vez conectado el socket.
 | Evento                     | Payload                                             | Cuándo                                   |
 |----------------------------|-----------------------------------------------------|------------------------------------------|
 | `lobby:state`              | `RoomSnapshot`                                      | Ante cualquier cambio relevante de sala. |
-| `lobby:playerJoined`       | `{ slot, name }`                                    | Entra un jugador nuevo.                  |
+| `lobby:playerJoined`       | `{ slot, name }`                                    | Entra un jugador nuevo (`slot` 1-4).     |
 | `lobby:playerLeft`         | `{ slot, name, reason: 'left' \| 'disconnected' }`  | Un jugador sale o se desconecta.         |
 | `lobby:playerReconnected`  | `{ slot, name }`                                    | Un jugador reconecta en la ventana de gracia. |
 | `lobby:closed`             | `{ reason }`                                        | El servidor cerró la sala.               |
@@ -244,8 +299,10 @@ Medición de latencia una vez conectado el socket.
   seed: number            // semilla del mapa (el servidor lo genera; el cliente lo recibe en game:sync)
   mapId: string
   difficulty: string
-  hostSlot: 1 | 2
-  players: PlayerSnapshot[]
+  mode: '1v1' | '2v2'     // NUEVO (por defecto '1v1')
+  capacity: number        // NUEVO: 2 (1v1) o 4 (2v2)
+  hostSlot: 1 | 2 | 3 | 4
+  players: PlayerSnapshot[]   // ordenados por slot
   combat: CombatSnapshot | null   // presente solo en 'combat'
   result: MatchResult | null      // presente solo en 'results'
   version: number         // monotónica; usar para descartar snapshots viejos
@@ -255,7 +312,7 @@ Medición de latencia una vez conectado el socket.
 
 ### `PlayerSnapshot`
 ```ts
-{ id: string; name: string; slot: 1 | 2; isHost: boolean;
+{ id: string; name: string; slot: 1 | 2 | 3 | 4; team: 1 | 2; isHost: boolean;   // team NUEVO
   ready: boolean; survivor: string; survivorConfirmed: boolean; connected: boolean }
 ```
 `id` es igual al `sessionId` (identidad pública estable dentro de la sala).
@@ -264,24 +321,32 @@ Medición de latencia una vez conectado el socket.
 ```ts
 { elapsed: number; phase: 'prep'|'wave1'|'wave2'|'horde'; wave: number; cores: { 1: number; 2: number } }
 ```
+`cores` está indexado por **equipo** (en 1v1 equipo == slot, así que no cambia nada). En 2v2 hay un núcleo
+compartido por equipo: `cores[1]` es el del equipo 1 (slots 1 y 3) y `cores[2]` el del equipo 2 (slots 2 y 4).
 
 ### `GameStateDto` (ver `src/contracts/game.ts`)
 ```ts
 { tick, time, phase: { id, label, start, end, wave }, maxWave,
-  players: GamePlayerDto[],          // posición, vida, arma, inventario, kills, buildHint…
+  players: GamePlayerDto[],          // + slot (1-4) y team (1|2); posición, vida, arma, inventario, kills, buildHint…
   zombies: [id, x, y, hp, maxHp, kind, attackAt, hurtAt][],   // kind 0 normal · 1 rápido · 2 tanque
   bullets: [id, x, y, vx, vy][],
-  structures: [casilla, tipo, hp, maxHp, dueño][],            // tipo 0 madera · 1 reforzada · 2 trampa
-  cores: { 1, 2 }, crates: { 1: Stock, 2: Stock },
+  structures: [casilla, tipo, hp, maxHp, dueño, orient][],    // tipo 0 madera · 1 reforzada · 2 trampa · 3 torreta
+                                                              // dueño = SLOT (1-4); su equipo es teamOf(slot)
+  cores: { 1, 2 }, crates: { 1: Stock, 2: Stock },             // indexados por EQUIPO
   events: GameEventDto[],            // disparos, golpes, muertes… (efectos visuales)
-  result: { winner: 0|1|2, reason, durationS, byTime } | null }
+  result: { winner: 0|1|2, reason, durationS, byTime } | null }   // winner = EQUIPO (1v1: = slot); 0 = empate
 ```
+`game:sync` → `map.bases`, `map.cores`, `map.crates` también van por **equipo** (`{1, 2}`); no hay claves 3/4.
+Para pintar a un jugador usa `player.team` (color de base) y `player.slot` (identidad). `armory.openedBy` y
+`armory.progress` van por **slot** (1-4). Evento `coreHit`: `{ type, slot, team }` — `slot` es el nombre antiguo y
+vale lo mismo que `team` (el equipo cuyo núcleo recibió el golpe). Eventos `shot`/`knife`/`playerDied`/`rejected`
+siguen llevando el **slot** del jugador (1-4).
 Las posiciones están en casillas (1 casilla = 32 px lógicos). El cliente interpola
 entre los dos últimos estados y nunca decide posición, vida, daño ni inventario.
 
 ### `ChatMessageSnapshot`
 ```ts
-{ id: number; slot: 1 | 2; author: string; text: string; at: number }
+{ id: number; slot: 1 | 2 | 3 | 4; author: string; text: string; at: number }
 ```
 
 ### `match:over` payload
@@ -289,24 +354,30 @@ entre los dos últimos estados y nunca decide posición, vida, daño ni inventar
 ```ts
 {
   ...RoomSnapshot,        // result, mapId, code, players (con survivor)...
-  xp?: { [slot]: number },
-  stats: { [slot: number]: {
+  xp?: { [slot]: number },          // por slot: 1-2 en 1v1, 1-4 en 2v2
+  stats: { [slot: number]: {        // por slot: 1-2 en 1v1, 1-4 en 2v2
+    team: 1 | 2                 // NUEVO
     zombieKills: number
     structuresBuilt: number
     coreDamageDealt: number   // HP del núcleo ENEMIGO quitado por las balas de ese jugador
-    coreHpPct: number         // % (0-100) de vida restante del PROPIO núcleo
+    coreHpPct: number         // % (0-100) de vida restante del núcleo de SU equipo
   } },
   durationS: number,
-  winner: 1 | 2 | null,
+  winner: 1 | 2 | null,     // EQUIPO ganador (1v1: igual al slot ganador). Ganan los 2 jugadores del equipo en 2v2
   reason: 'core_destroyed' | 'time_out' | 'opponent_left',
   mapName: string           // nombre en español, p. ej. "Ciudad abandonada"
 }
 ```
+`mode` y `capacity` vienen del `RoomSnapshot` que se esparce en el payload. Un jugador gana si
+`winner === player.team` (en 1v1 equivale a `winner === player.slot`). En 2v2 `stats` trae los 4 slots y `xp` los jugadores
+que siguen en la sala al terminar (quien se fue a media partida no recibe XP ni fila de historial). El XP, las misiones y el
+historial (`MatchHistory`/`MatchPlayer`, una fila por jugador con su `slot` 1-4; sin cambios de esquema) se calculan
+con la misma regla de victoria por equipo: los dos jugadores del equipo ganador cuentan como ganadores.
 Si la partida acaba por abandono el payload se re-emite con los mismos campos.
 
 ### `MatchResult`
 ```ts
-{ winner: 1 | 2 | null; reason: 'core_destroyed'|'opponent_left'|'time_out'; cores: { 1:number; 2:number } }
+{ winner: 1 | 2 | null /* equipo */; reason: 'core_destroyed'|'opponent_left'|'time_out'; cores: { 1:number; 2:number } /* por equipo */ }
 ```
 
 ---
@@ -318,7 +389,9 @@ Si la partida acaba por abandono el payload se re-emite con los mismos campos.
   pasando su `sessionId`.
 - **Abandono en lobby/selección:** libera el asiento; si la sala queda vacía se
   elimina; si quedaba un jugador, se le reasigna el host.
-- **Abandono en combate:** el rival gana (`reason: 'opponent_left'`).
+- **Abandono en combate:** en 1v1 el rival gana (`reason: 'opponent_left'`). En 2v2 solo si se va todo el equipo
+  (ver "Modos de juego"); si queda un compañero, la partida sigue y solo llega `lobby:playerLeft` + `lobby:state`.
+- **Reconexión en 2v2:** cualquiera de los 4 asientos se reserva y recupera con su `sessionId` (mismo slot y equipo).
 - **Barrido periódico** (`sweepIntervalMs`, 15 s): expira asientos fuera de la
   ventana de gracia, elimina salas vacías (`emptyRoomTtlMs`) y salas huérfanas/
   antiguas (`lobbyMaxAgeMs`).

@@ -17,17 +17,41 @@ export const ROOM_CODE = {
   alphabet: 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789',
 } as const;
 
-/** Capacidad de la sala: el juego es estrictamente 1 vs 1. */
-export const ROOM_CAPACITY = 2;
+/** Game modes. Rooms are created as '1v1' and the host can switch in the lobby. */
+export const GAME_MODES = ['1v1', '2v2'] as const;
+export type GameMode = (typeof GAME_MODES)[number];
+export const DEFAULT_MODE: GameMode = '1v1';
 
-/** Slots disponibles. Slot 1 = base azul, Slot 2 = base roja. */
-export type Slot = 1 | 2;
-export const SLOTS: readonly Slot[] = [1, 2] as const;
+/** Room capacity per mode (1v1: 2 players, 2v2: 4 players). */
+export const MODE_CAPACITY: Record<GameMode, number> = { '1v1': 2, '2v2': 4 };
+/** Players per team in 2v2. */
+export const TEAM_SIZE = 2;
+/** 1v1 capacity (kept for compatibility). */
+export const ROOM_CAPACITY = MODE_CAPACITY['1v1'];
 
-/** Tema visual/base por slot (espeja la convención azul/rojo del lobby). */
+/**
+ * Slots: 1v1 uses 1 and 2; 2v2 uses 1-4.
+ * Team 1 (blue) = slots 1 and 3; team 2 (red) = slots 2 and 4. In 1v1 team == slot.
+ */
+export { teamOf, seatOf, slotFor, type Slot, type Team } from '../game/constants';
+import type { Slot, Team } from '../game/constants';
+export const SLOTS: readonly Slot[] = [1, 2, 3, 4] as const;
+export const TEAMS: readonly Team[] = [1, 2] as const;
+
+/** Slots that exist in a mode, in order. */
+export const slotsOf = (mode: GameMode): readonly Slot[] => SLOTS.slice(0, MODE_CAPACITY[mode]);
+
+/** Visual theme/base per team (blue / red lobby convention). */
+export const TEAM_BASE: Record<Team, 'blue' | 'red'> = {
+  1: 'blue',
+  2: 'red',
+};
+/** Same convention keyed by slot (a slot uses its team's base). */
 export const SLOT_BASE: Record<Slot, 'blue' | 'red'> = {
   1: 'blue',
   2: 'red',
+  3: 'blue',
+  4: 'red',
 };
 
 /** Límites de validación de entrada del usuario. */
@@ -80,6 +104,8 @@ export const RATE_LIMITS = {
   'lobby:confirmSurvivor': { points: 20, windowMs: 10_000 },
   'lobby:setMap': { points: 30, windowMs: 10_000 },
   'lobby:setDifficulty': { points: 30, windowMs: 10_000 },
+  'lobby:setMode': { points: 30, windowMs: 10_000 },
+  'room:setTeam': { points: 30, windowMs: 10_000 },
   'lobby:start': { points: 10, windowMs: 10_000 },
   'lobby:leave': { points: 10, windowMs: 10_000 },
   'lobby:rename': { points: 20, windowMs: 10_000 },

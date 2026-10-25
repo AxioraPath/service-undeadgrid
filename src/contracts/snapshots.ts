@@ -1,4 +1,4 @@
-import type { Slot } from '../config/game.config';
+import type { GameMode, Slot, Team } from '../config/game.config';
 import type { MatchResult, PhaseId, RoomStatus } from './common';
 
 /**
@@ -10,6 +10,8 @@ export interface PlayerSnapshot {
   id: string;
   name: string;
   slot: Slot;
+  /** Team of the slot (1v1: same number as the slot; 2v2: slots 1/3 -> 1, slots 2/4 -> 2). */
+  team: Team;
   isHost: boolean;
   ready: boolean;
   survivor: string;
@@ -37,8 +39,8 @@ export interface CombatSnapshot {
   phase: PhaseId;
   /** Número de oleada (0 = preparación). */
   wave: number;
-  /** Vida actual de cada núcleo. */
-  cores: Record<Slot, number>;
+  /** Current HP of each team's shared core (keyed by team; in 1v1 team == slot). */
+  cores: Record<Team, number>;
 }
 
 /**
@@ -53,6 +55,10 @@ export interface RoomSnapshot {
   seed: number;
   mapId: string;
   difficulty: string;
+  /** Game mode chosen by the host in the lobby. */
+  mode: GameMode;
+  /** Max players for the mode (2 or 4). */
+  capacity: number;
   /** Slot del host (quien puede iniciar y editar ajustes). */
   hostSlot: Slot;
   players: PlayerSnapshot[];

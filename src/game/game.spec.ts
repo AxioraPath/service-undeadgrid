@@ -390,7 +390,7 @@ describe('Combate nuevo: disparo, construcción, caja de armamento y torretas', 
     // Un muro justo arriba del jugador: puede subir hasta que la caja de los pies toca la casilla de arriba.
     const tx = Math.floor(p.x);
     const ty = Math.floor(p.y) - 1;
-    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 2, orient: 'h' });
+    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 2, team: 2, orient: 'h' });
     run(s, { up: true }, 30);
     expect(p.y + BODY.top).toBeGreaterThanOrEqual(ty + 1 - 1e-6);
     expect(p.y + BODY.top).toBeLessThan(ty + 1.05);
@@ -622,7 +622,7 @@ describe('colisiones, explosivos y paredes propias', () => {
     const [a, b] = s.players;
     const tx = Math.floor(a.x) + 1;
     const ty = Math.floor(a.y);
-    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 1, orient: 'v' });
+    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 1, team: 1, orient: 'v' });
     const x0 = a.x;
     for (let i = 0; i < 20; i++) step(s, { a: { ...idle, right: true } }, [], 1 / 30);
     expect(a.x).toBeGreaterThan(tx + 0.3);

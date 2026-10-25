@@ -42,6 +42,7 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
       return {
         id: p.id,
         slot: p.slot,
+        team: p.team,
         name: p.name,
         survivor: p.survivor,
         x: r3(p.x),

@@ -29,7 +29,9 @@ import {
   type ProjectileKind,
   type Slot,
   type Stock,
+  type Team,
   type WeaponId,
+  teamOf,
 } from './constants'
 import { applyDamage, heal, zombieCount, zombieDamage, zombieHp } from './formulas'
 import { BUILDINGS, blocksBullets, generateMap, inRect, mapThemeOf, isSolidTileKind, tileAt, tileIndex, Tile, type GameMapData, type Point } from './mapgen'
@@ -63,6 +65,8 @@ export type Command =
 export interface Player {
   id: string
   slot: Slot
+  /** Team of the slot (1v1: same number as the slot). */
+  team: Team
   name: string
   survivor: string
   x: number
@@ -124,13 +128,14 @@ export interface Zombie {
   kind: ZombieKind
   attackAt: number
   hurtAt: number
-  target: { kind: 'player'; id: string } | { kind: 'core'; slot: Slot } | null
+  target: { kind: 'player'; id: string } | { kind: 'core'; team: Team } | null
 }
 
 export interface Bullet {
   id: number
   owner: string
   ownerSlot: Slot
+  ownerTeam: Team
   x: number
   y: number
   px: number
@@ -155,7 +160,10 @@ export interface Structure {
   type: 'wood' | 'reinforced' | 'trap' | 'turret'
   hp: number
   maxHp: number
+  /** Slot of whoever built it (stats). */
   owner: Slot
+  /** Team it belongs to (collision, targeting, friendly fire). */
+  team: Team
   /** Wall orientation chosen at build time (traps use 'h' and ignore it). */
   orient: WallOrient
   /** Solo torretas: tiros en el cargador, enfriamiento, fin de la recarga y hacia dónde apunta. */
@@ -189,7 +197,7 @@ export interface Armory {
 }
 
 export interface Core {
-  slot: Slot
+  team: Team
   hp: number
 }
 
@@ -204,12 +212,13 @@ export type GameEvent =
   | { type: 'built'; x: number; y: number; what: string }
   | { type: 'rejected'; slot: Slot; reason: string }
   | { type: 'phase'; label: string }
-  | { type: 'coreHit'; slot: Slot }
+  /** `slot` is the legacy name of `team` (identical in 1v1). */
+  | { type: 'coreHit'; slot: Team; team: Team }
   | { type: 'armoryOpened'; slot: Slot; weapon: HeavyId }
   | { type: 'armoryReady'; weapon: HeavyId }
 
 export interface MatchResult {
-  winner: Slot | 0 // 0 = empate
+  winner: Team | 0 // winning TEAM (1v1: same as the slot); 0 = draw
   reason: string
   durationS: number
   /** true si terminó por tiempo; false si fue por núcleo destruido + enemigo eliminado. */
@@ -225,10 +234,12 @@ export interface MatchState {
   zombies: Zombie[]
   bullets: Bullet[]
   structures: Map<number, Structure>
-  cores: Record<Slot, Core>
+  /** One shared core per TEAM. */
+  cores: Record<Team, Core>
   /** HP of the ENEMY core removed by each slot's player bullets (stat only, never read by the simulation). */
-  coreDamageDealt: Record<Slot, number>
-  crates: Record<Slot, Stock>
+  coreDamageDealt: Partial<Record<Slot, number>>
+  /** One shared crate stock per TEAM (teammates take from the same stock). */
+  crates: Record<Team, Stock>
   /** Explosivos del mapa por índice de objeto, la casilla → objeto, y los que ya explotaron. */
   props: Map<number, Prop>
   propAt: Map<number, number>
@@ -278,12 +289,16 @@ function explosivesOf(map: GameMapData) {
   return { props, propAt, destroyedProps: [] as number[] }
 }
 
-const coreCenter = (map: GameMapData, slot: Slot): Point => ({ x: map.cores[slot].x + 1, y: map.cores[slot].y + 1 })
+const coreCenter = (map: GameMapData, team: Team): Point => ({ x: map.cores[team].x + 1, y: map.cores[team].y + 1 })
 
 function spawnPoint(map: GameMapData, slot: Slot): Point {
-  // Junto al núcleo, del lado que mira al centro del mapa.
-  const c = map.cores[slot]
-  return slot === 1 ? { x: c.x + 0.5, y: c.y + 2.5 } : { x: c.x + 1.5, y: c.y - 0.5 }
+  // Next to the shared core, on the side facing the map centre. The second seat of a team
+  // (slots 3/4, 2v2 only) spawns on the adjacent tile inside the same base.
+  const team = teamOf(slot)
+  const c = map.cores[team]
+  const second = slot > 2
+  if (team === 1) return { x: c.x + (second ? 1.5 : 0.5), y: c.y + 2.5 }
+  return { x: c.x + (second ? 0.5 : 1.5), y: c.y - 0.5 }
 }
 
 export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOptions): MatchState {
@@ -298,11 +313,12 @@ export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOpt
       const extra = perksOf(p.survivor).start
       return {
         ...p,
+        team: teamOf(p.slot),
         x: sp.x,
         y: sp.y,
         px: sp.x,
         py: sp.y,
-        dirX: p.slot === 1 ? 1 : -1,
+        dirX: teamOf(p.slot) === 1 ? 1 : -1,
         dirY: 0,
         aim: null,
         hp: PLAYER.maxHp,
@@ -335,8 +351,8 @@ export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOpt
     zombies: [],
     bullets: [],
     structures: new Map(),
-    cores: { 1: { slot: 1, hp: CORE_HP }, 2: { slot: 2, hp: CORE_HP } },
-    coreDamageDealt: { 1: 0, 2: 0 },
+    cores: { 1: { team: 1, hp: CORE_HP }, 2: { team: 2, hp: CORE_HP } },
+    coreDamageDealt: Object.fromEntries(players.map((p) => [p.slot, 0])),
     crates: { 1: { ...CRATE_START }, 2: { ...CRATE_START } },
     ...explosivesOf(map),
     difficulty: { ...difficultyOf(difficulty) },
@@ -356,9 +372,9 @@ export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOpt
 // ---------------------------------------------------------------------------
 
 const isCoreTile = (s: MatchState, x: number, y: number) =>
-  ([1, 2] as Slot[]).some((slot) => {
-    const c = s.map.cores[slot]
-    return s.cores[slot].hp > 0 && x >= c.x && x < c.x + 2 && y >= c.y && y < c.y + 2
+  ([1, 2] as Team[]).some((team) => {
+    const c = s.map.cores[team]
+    return s.cores[team].hp > 0 && x >= c.x && x < c.x + 2 && y >= c.y && y < c.y + 2
   })
 
 const wallAt = (s: MatchState, x: number, y: number) => {
@@ -399,10 +415,10 @@ function moveEntity(s: MatchState, e: { x: number; y: number }, dx: number, dy: 
   return hit
 }
 
-export const playerInOwnBase = (s: MatchState, p: Player) => inRect(s.map.bases[p.slot], Math.floor(p.x), Math.floor(p.y))
+export const playerInOwnBase = (s: MatchState, p: Player) => inRect(s.map.bases[p.team], Math.floor(p.x), Math.floor(p.y))
 
 export const playerOnOwnCrate = (s: MatchState, p: Player) => {
-  const c = s.map.crates[p.slot]
+  const c = s.map.crates[p.team]
   return p.alive && Math.floor(p.x) === c.x && Math.floor(p.y) === c.y
 }
 
@@ -447,8 +463,8 @@ export function previewBuildAt(s: MatchState, p: Player, x: number, y: number, n
   // Upgrading/repairing keeps the existing wall's orientation; new walls use the given one.
   const orient: WallOrient = existing && existing.type !== 'trap' ? existing.orient : newOrient
   const need = (has: boolean, label: string): BuildPreview => ({ x, y, ok: has, lacks: !has, label, orient })
-  const base = s.map.bases[p.slot]
-  const crate = s.map.crates[p.slot]
+  const base = s.map.bases[p.team]
+  const crate = s.map.crates[p.team]
   if (!inRect(base, x, y) || isCoreTile(s, x, y) || (crate.x === x && crate.y === y))
     return { x, y, ok: false, lacks: false, label: 'No se puede construir aquí', orient }
 
@@ -513,7 +529,7 @@ function applyCommand(s: MatchState, p: Player, cmd: Command) {
   if (cmd.type === 'crateTake') {
     // El servidor es el único que decide quién saca qué: solo desde tu propia caja.
     if (!playerOnOwnCrate(s, p)) return
-    const crate = s.crates[p.slot]
+    const crate = s.crates[p.team]
     p[cmd.item] += crate[cmd.item]
     crate[cmd.item] = 0
   }
@@ -542,15 +558,15 @@ function applyBuild(s: MatchState, p: Player, pv: BuildPreview) {
     st.maxHp = maxHp
   } else if (p.build === 'turret') {
     p.turrets--
-    s.structures.set(key, { type: 'turret', hp: TURRET.hp, maxHp: TURRET.hp, owner: p.slot, orient: 'h', ammo: TURRET.magazine, cd: 0, reloadUntil: 0, aimX: 0, aimY: 1 })
+    s.structures.set(key, { type: 'turret', hp: TURRET.hp, maxHp: TURRET.hp, owner: p.slot, team: p.team, orient: 'h', ammo: TURRET.magazine, cd: 0, reloadUntil: 0, aimX: 0, aimY: 1 })
     if (p.turrets <= 0) p.build = 'wall'
   } else if (p.build === 'wall') {
     p.wood -= STRUCTURES.woodWall.wood
     const hp = Math.round(STRUCTURES.woodWall.hp * perksOf(p.survivor).wallHp)
-    s.structures.set(key, { type: 'wood', hp, maxHp: hp, owner: p.slot, orient: pv.orient })
+    s.structures.set(key, { type: 'wood', hp, maxHp: hp, owner: p.slot, team: p.team, orient: pv.orient })
   } else {
     p.metal -= STRUCTURES.trap.metal
-    s.structures.set(key, { type: 'trap', hp: 1, maxHp: 1, owner: p.slot, orient: 'h' })
+    s.structures.set(key, { type: 'trap', hp: 1, maxHp: 1, owner: p.slot, team: p.team, orient: 'h' })
   }
   if (!repaired) p.structuresBuilt++
   s.events.push({ type: 'built', x: pv.x, y: pv.y, what: pv.label })
@@ -611,7 +627,7 @@ function shoot(s: MatchState, p: Player) {
     const x = p.x + Math.cos(a) * 0.45
     const y = p.y + Math.sin(a) * 0.45
     s.bullets.push({
-      id: s.nextId++, owner: p.id, ownerSlot: p.slot, x, y, px: x, py: y, vx, vy,
+      id: s.nextId++, owner: p.id, ownerSlot: p.slot, ownerTeam: p.team, x, y, px: x, py: y, vx, vy,
       damage: w.damage * dmg, traveled: 0, kind: w.projectile, speed: w.speed, range: w.range,
       pierce: w.pierce, hits: [], splash: w.projectile === 'rocket' ? ROCKET.damage * dmg : 0,
     })
@@ -670,10 +686,10 @@ function killPlayer(s: MatchState, p: Player, killerSlot: Slot | null) {
   p.alive = false
   p.hp = 0
   p.deaths++
-  p.respawnAt = s.cores[p.slot].hp > 0 ? s.time + PLAYER.respawnS : null
-  if (killerSlot && killerSlot !== p.slot) {
+  p.respawnAt = s.cores[p.team].hp > 0 ? s.time + PLAYER.respawnS : null
+  if (killerSlot) {
     const killer = s.players.find((o) => o.slot === killerSlot)
-    if (killer) killer.kills++
+    if (killer && killer.team !== p.team) killer.kills++
   }
   s.events.push({ type: 'playerDied', slot: p.slot, x: p.x, y: p.y })
 }
@@ -746,14 +762,16 @@ function rewardZombieKill(s: MatchState, slot: Slot) {
   if (p.zombieKills % REWARDS.zombiesPerMetal === 0) p.metal++
 }
 
+const enemyTeam = (t: Team): Team => (t === 1 ? 2 : 1)
+
 /** Daña el núcleo enemigo y lo cuenta en la estadística de quien disparó. */
 function hitCore(s: MatchState, ownerSlot: Slot, dmg: number) {
-  const enemy: Slot = ownerSlot === 1 ? 2 : 1
+  const enemy = enemyTeam(teamOf(ownerSlot))
   if (s.cores[enemy].hp <= 0) return
   const before = s.cores[enemy].hp
   s.cores[enemy].hp = applyDamage(before, dmg)
-  s.coreDamageDealt[ownerSlot] += before - s.cores[enemy].hp
-  s.events.push({ type: 'coreHit', slot: enemy })
+  s.coreDamageDealt[ownerSlot] = (s.coreDamageDealt[ownerSlot] ?? 0) + (before - s.cores[enemy].hp)
+  s.events.push({ type: 'coreHit', slot: enemy, team: enemy })
 }
 
 /** Explosión del cohete: zombis, y en combate también al rival, sus paredes/torretas/trampas y su núcleo. */
@@ -769,16 +787,16 @@ function explode(s: MatchState, b: Bullet) {
   for (const [i, prop] of [...s.props]) if (Math.hypot(prop.x - b.x, prop.y - b.y) <= r + 0.5) damageProp(s, i, b.splash, b.ownerSlot)
   if (!isCombat(s)) return
   for (const p of s.players)
-    if (p.alive && p.slot !== b.ownerSlot && Math.hypot(p.x - b.x, p.y - b.y) <= r) damagePlayer(s, p, b.splash, b.ownerSlot)
+    if (p.alive && p.team !== b.ownerTeam && Math.hypot(p.x - b.x, p.y - b.y) <= r) damagePlayer(s, p, b.splash, b.ownerSlot)
   for (const [key, st] of [...s.structures]) {
-    if (st.owner === b.ownerSlot) continue
+    if (st.team === b.ownerTeam) continue
     const cx = (key % s.map.w) + 0.5
     const cy = Math.floor(key / s.map.w) + 0.5
     if (Math.hypot(cx - b.x, cy - b.y) > r + 0.3) continue
     st.hp = applyDamage(st.hp, b.splash)
     if (st.hp <= 0) s.structures.delete(key)
   }
-  const enemy: Slot = b.ownerSlot === 1 ? 2 : 1
+  const enemy = enemyTeam(b.ownerTeam)
   const c = coreCenter(s.map, enemy)
   if (Math.hypot(c.x - b.x, c.y - b.y) <= r + 1) hitCore(s, b.ownerSlot, b.splash)
 }
@@ -852,7 +870,7 @@ function updateBullets(s: MatchState, dt: number) {
       }
       if (pvp) {
         for (const p of s.players) {
-          if (p.alive && p.slot !== b.ownerSlot && Math.abs(p.x - b.x) < 0.4 && Math.abs(p.y - b.y) < 0.4) {
+          if (p.alive && p.team !== b.ownerTeam && Math.abs(p.x - b.x) < 0.4 && Math.abs(p.y - b.y) < 0.4) {
             if (b.kind === 'rocket') {
               explode(s, b)
               return false
@@ -865,7 +883,7 @@ function updateBullets(s: MatchState, dt: number) {
       }
       // Tus paredes y torretas no frenan tus balas: se puede defender la base desde dentro.
       const own = wallAt(s, tx, ty)
-      if (own && own.owner === b.ownerSlot && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
+      if (own && own.team === b.ownerTeam && !isSolidTileKind(tileAt(s.map, tx, ty))) continue
       if (bulletBlocked(s, tx, ty)) {
         if (b.kind === 'rocket') {
           explode(s, b)
@@ -874,11 +892,11 @@ function updateBullets(s: MatchState, dt: number) {
         const prop = s.propAt.get(tileIndex(tx, ty))
         if (prop !== undefined) damageProp(s, prop, b.damage, b.ownerSlot)
         const wall = wallAt(s, tx, ty)
-        if (wall && wall.owner !== b.ownerSlot && pvp) {
+        if (wall && wall.team !== b.ownerTeam && pvp) {
           wall.hp = applyDamage(wall.hp, b.damage)
           if (wall.hp <= 0) s.structures.delete(tileIndex(tx, ty))
         }
-        const enemy: Slot = b.ownerSlot === 1 ? 2 : 1
+        const enemy = enemyTeam(b.ownerTeam)
         const c = s.map.cores[enemy]
         if (pvp && tx >= c.x && tx < c.x + 2 && ty >= c.y && ty < c.y + 2) hitCore(s, b.ownerSlot, b.damage)
         s.events.push({ type: 'hit', x: b.x, y: b.y })
@@ -913,7 +931,7 @@ function spawnZombies(s: MatchState) {
 
 function targetPoint(s: MatchState, z: Zombie): Point | null {
   if (!z.target) return null
-  if (z.target.kind === 'core') return coreCenter(s.map, z.target.slot)
+  if (z.target.kind === 'core') return coreCenter(s.map, z.target.team)
   const id = z.target.id
   const p = s.players.find((o) => o.id === id)
   return p && p.alive ? { x: p.x, y: p.y } : null
@@ -930,13 +948,13 @@ function chooseTarget(s: MatchState, z: Zombie) {
       best = { kind: 'player', id: p.id }
     }
   }
-  for (const slot of [1, 2] as Slot[]) {
-    if (s.cores[slot].hp <= 0) continue
-    const c = coreCenter(s.map, slot)
+  for (const team of [1, 2] as Team[]) {
+    if (s.cores[team].hp <= 0) continue
+    const c = coreCenter(s.map, team)
     const d = Math.hypot(c.x - z.x, c.y - z.y)
     if (d < bestD) {
       bestD = d
-      best = { kind: 'core', slot }
+      best = { kind: 'core', team }
     }
   }
   z.target = best
@@ -1016,8 +1034,8 @@ function flowFor(s: MatchState, z: Zombie): Float32Array | null {
   let key: string
   let goals: Point[]
   if (z.target.kind === 'core') {
-    const c = s.map.cores[z.target.slot]
-    key = `core${z.target.slot}`
+    const c = s.map.cores[z.target.team]
+    key = `core${z.target.team}`
     goals = [{ x: c.x, y: c.y }, { x: c.x + 1, y: c.y }, { x: c.x, y: c.y + 1 }, { x: c.x + 1, y: c.y + 1 }]
   } else {
     const id = z.target.id
@@ -1086,9 +1104,9 @@ function updateZombies(s: MatchState, dt: number) {
         z.attackCd = 1 / ZOMBIE.attackRate
         z.attackAt = s.time
         if (z.target.kind === 'core') {
-          const core = s.cores[z.target.slot]
+          const core = s.cores[z.target.team]
           core.hp = applyDamage(core.hp, z.damage)
-          s.events.push({ type: 'coreHit', slot: z.target.slot })
+          s.events.push({ type: 'coreHit', slot: z.target.team, team: z.target.team })
         } else {
           const id = z.target.id
           const p = s.players.find((o) => o.id === id)
@@ -1165,7 +1183,7 @@ function updateTraps(s: MatchState, dt: number) {
     }
     if (!isCombat(s)) continue
     for (const p of s.players) {
-      if (!p.alive || p.slot === st.owner || !on(p)) continue
+      if (!p.alive || p.team === st.team || !on(p)) continue
       const d = tick(p)
       if (d > 0) damagePlayer(s, p, d, st.owner)
     }
@@ -1234,7 +1252,7 @@ function updateTurrets(s: MatchState, dt: number) {
     if (!target && pvp)
       for (const p of s.players) {
         const d = Math.hypot(p.x - cx, p.y - cy)
-        if (p.alive && p.slot !== st.owner && d < best) {
+        if (p.alive && p.team !== st.team && d < best) {
           best = d
           target = p
         }
@@ -1246,7 +1264,7 @@ function updateTurrets(s: MatchState, dt: number) {
     const x = cx + ux * 0.55
     const y = cy + uy * 0.55
     s.bullets.push({
-      id: s.nextId++, owner: `turret:${key}`, ownerSlot: st.owner, x, y, px: x, py: y, vx: ux * BULLET.speed, vy: uy * BULLET.speed,
+      id: s.nextId++, owner: `turret:${key}`, ownerSlot: st.owner, ownerTeam: st.team, x, y, px: x, py: y, vx: ux * BULLET.speed, vy: uy * BULLET.speed,
       damage: TURRET.damage, traveled: 0, kind: 'bullet', speed: BULLET.speed, range: BULLET.range, pierce: 1, hits: [], splash: 0,
     })
     st.shotAt = s.time
@@ -1277,8 +1295,8 @@ function updatePhase(s: MatchState) {
     s.armory.openedBy = null
     s.armory.progress = {}
     s.events.push({ type: 'armoryReady', weapon: armoryLoot(s).weapon })
-    for (const slot of [1, 2] as Slot[]) {
-      const crate = s.crates[slot]
+    for (const team of [1, 2] as Team[]) {
+      const crate = s.crates[team]
       for (const k of Object.keys(CRATE_REFILL) as (keyof Stock)[]) crate[k] += CRATE_REFILL[k]
     }
     const count = Math.round(zombieCount(ph.wave) * s.difficulty.count)
@@ -1293,10 +1311,9 @@ function updatePhase(s: MatchState) {
 }
 
 function checkVictory(s: MatchState) {
-  const eliminated = (slot: Slot) => {
-    const p = s.players.find((o) => o.slot === slot)
-    return s.cores[slot].hp <= 0 && (!p || (!p.alive && p.respawnAt === null))
-  }
+  // A team is out when its shared core is destroyed and none of its players can still come back.
+  const eliminated = (team: Team) =>
+    s.cores[team].hp <= 0 && s.players.filter((o) => o.team === team).every((p) => !p.alive && p.respawnAt === null)
   const out1 = eliminated(1)
   const out2 = eliminated(2)
   if (out1 || out2) {
@@ -1315,10 +1332,7 @@ function checkVictory(s: MatchState) {
       s.result = { winner: h1 > h2 ? 1 : 2, reason: 'Tiempo agotado: núcleo con más vida', durationS: MATCH_DURATION, byTime: true }
       return
     }
-    const k = (slot: Slot) => {
-      const p = s.players.find((o) => o.slot === slot)
-      return p ? p.kills + p.zombieKills : 0
-    }
+    const k = (team: Team) => s.players.filter((o) => o.team === team).reduce((n, p) => n + p.kills + p.zombieKills, 0)
     const k1 = k(1)
     const k2 = k(2)
     s.result = {

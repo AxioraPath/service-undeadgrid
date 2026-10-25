@@ -1,4 +1,4 @@
-import type { Slot } from '../config/game.config';
+import type { Slot, Team } from '../config/game.config';
 
 /**
  * Máquina de estados de la partida (autoritativa en el servidor).
@@ -33,11 +33,14 @@ export type PhaseId = 'prep' | 'wave1' | 'wave2' | 'horde';
 
 /** Resultado final de la partida. */
 export interface MatchResult {
-  /** Slot ganador, o null si empate/sin resolver (p. ej. abandono simultáneo). */
-  winner: Slot | null;
+  /**
+   * Winning TEAM, or null for a draw / unresolved (e.g. simultaneous abandonment).
+   * In 1v1 the team number equals the winner's slot.
+   */
+  winner: Team | null;
   reason: 'core_destroyed' | 'opponent_left' | 'time_out';
-  /** Vida final de cada núcleo al cerrar la partida. */
-  cores: Record<Slot, number>;
+  /** Final HP of each team's shared core (keyed by team; in 1v1 team == slot). */
+  cores: Record<Team, number>;
 }
 
 /** Códigos de error estables para acks (el cliente puede mapearlos a UI). */
@@ -46,6 +49,8 @@ export const ErrorCode = {
   ROOM_NOT_FOUND: 'ROOM_NOT_FOUND',
   ROOM_FULL: 'ROOM_FULL',
   ROOM_CLOSED: 'ROOM_CLOSED',
+  TEAM_FULL: 'TEAM_FULL',
+  TOO_MANY_PLAYERS: 'TOO_MANY_PLAYERS',
   NAME_INVALID: 'NAME_INVALID',
   CODE_INVALID: 'CODE_INVALID',
   NOT_IN_ROOM: 'NOT_IN_ROOM',
@@ -81,11 +86,13 @@ export const fail = (error: ApiError): Ack<never> => ({ ok: false, error });
 
 /** Per-player stats shown on the results screen. */
 export interface MatchPlayerStats {
+  /** Team of this player (1v1: same as the slot). */
+  team: Team;
   zombieKills: number;
   structuresBuilt: number;
-  /** HP of the enemy core removed by this player's side (player bullets). */
+  /** HP of the enemy core removed by this player's bullets. */
   coreDamageDealt: number;
-  /** Remaining HP percentage (0-100) of this player's OWN core. */
+  /** Remaining HP percentage (0-100) of this player's team core. */
   coreHpPct: number;
 }
 
@@ -93,9 +100,11 @@ export interface MatchPlayerStats {
 export interface MatchOverPayload {
   /** XP earned per slot. */
   xp?: Record<number, number>;
+  /** Keyed by slot: 1-2 in 1v1, 1-4 in 2v2 (only players that took part). */
   stats: Record<number, MatchPlayerStats>;
   durationS: number;
-  winner: Slot | null;
+  /** Winning TEAM (1v1: same number as the winning slot) or null for a draw. */
+  winner: Team | null;
   reason: MatchResult['reason'];
   /** Spanish display name of the map. */
   mapName: string;

@@ -71,7 +71,7 @@ describe('matchOverDetails', () => {
     expect(d.reason).toBe('core_destroyed');
     expect(d.mapName).toBe('Ciudad abandonada');
     expect(d.durationS).toBe(Math.round(match.time));
-    expect(d.stats[1]).toEqual({ zombieKills: 7, structuresBuilt: 3, coreDamageDealt: 500, coreHpPct: 50 });
+    expect(d.stats[1]).toEqual({ team: 1, zombieKills: 7, structuresBuilt: 3, coreDamageDealt: 500, coreHpPct: 50 });
     expect(d.stats[2].coreHpPct).toBe(0);
     expect(d.stats[2].coreDamageDealt).toBe(0);
   });

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   DIFFICULTIES,
+  GAME_MODES,
   LIMITS,
   MAP_IDS,
   ROOM_CODE,
@@ -79,6 +80,12 @@ export type SetMapPayload = z.infer<typeof setMapSchema>;
 
 export const setDifficultySchema = z.object({ difficulty: difficultySchema });
 export type SetDifficultyPayload = z.infer<typeof setDifficultySchema>;
+
+export const setModeSchema = z.object({ mode: z.enum(GAME_MODES) });
+export type SetModePayload = z.infer<typeof setModeSchema>;
+
+export const setTeamSchema = z.object({ team: z.union([z.literal(1), z.literal(2)]) });
+export type SetTeamPayload = z.infer<typeof setTeamSchema>;
 
 export const chatSendSchema = z.object({
   text: z
