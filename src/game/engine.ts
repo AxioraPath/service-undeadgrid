@@ -13,6 +13,7 @@ import {
   TICK_RATE,
   TURRET,
   CORE_HP,
+  EXPLOSIVES,
   CRATE_REFILL,
   CRATE_START,
   MATCH_DURATION,
@@ -23,6 +24,7 @@ import {
   WEAPONS,
   ZOMBIE,
   type BuildId,
+  type ExplosiveKind,
   type HeavyId,
   type ProjectileKind,
   type Slot,
@@ -30,7 +32,7 @@ import {
   type WeaponId,
 } from './constants'
 import { applyDamage, heal, zombieCount, zombieDamage, zombieHp } from './formulas'
-import { blocksBullets, generateMap, inRect, mapThemeOf, isSolidTileKind, tileAt, tileIndex, Tile, type GameMapData, type Point } from './mapgen'
+import { BUILDINGS, blocksBullets, generateMap, inRect, mapThemeOf, isSolidTileKind, tileAt, tileIndex, Tile, type GameMapData, type Point } from './mapgen'
 import { createRng, type Rng } from './rng'
 
 // ---------------------------------------------------------------------------
@@ -166,6 +168,16 @@ export interface Structure {
   shotAt?: number
 }
 
+/** Barril o tanque de combustible del mapa: casillas que ocupa, centro y vida. */
+export interface Prop {
+  kind: ExplosiveKind
+  hp: number
+  maxHp: number
+  cells: number[]
+  x: number
+  y: number
+}
+
 /** Caja de armamento del centro del mapa. */
 export interface Armory {
   x: number
@@ -183,7 +195,8 @@ export interface Core {
 
 export type GameEvent =
   | { type: 'shot'; x: number; y: number; dirX: number; dirY: number; slot: Slot }
-  | { type: 'explosion'; x: number; y: number }
+  | { type: 'explosion'; x: number; y: number; big?: boolean }
+  | { type: 'propDestroyed'; index: number }
   | { type: 'knife'; slot: Slot; x: number; y: number }
   | { type: 'hit'; x: number; y: number }
   | { type: 'zombieDied'; x: number; y: number; kind: ZombieKind }
@@ -216,6 +229,10 @@ export interface MatchState {
   /** HP of the ENEMY core removed by each slot's player bullets (stat only, never read by the simulation). */
   coreDamageDealt: Record<Slot, number>
   crates: Record<Slot, Stock>
+  /** Explosivos del mapa por índice de objeto, la casilla → objeto, y los que ya explotaron. */
+  props: Map<number, Prop>
+  propAt: Map<number, number>
+  destroyedProps: number[]
   /** Multiplicadores de la dificultad elegida en la sala. */
   difficulty: { count: number; hp: number; damage: number }
   armory: Armory
@@ -242,6 +259,24 @@ export interface CreateMatchOptions {
 // ---------------------------------------------------------------------------
 // Creación
 // ---------------------------------------------------------------------------
+
+/** Barriles (kind 'barrel') y tanques de combustible (estructura 'tanque-combustible') del mapa. */
+function explosivesOf(map: GameMapData) {
+  const props = new Map<number, Prop>()
+  const propAt = new Map<number, number>()
+  map.objects.forEach((o, i) => {
+    const kind: ExplosiveKind | null =
+      o.kind === 'barrel' ? 'barrel' : o.kind === 'building' && BUILDINGS[o.variant]?.name === 'tanque-combustible' ? 'tank' : null
+    if (!kind) return
+    const cells: number[] = []
+    for (let y = o.y; y < o.y + o.h; y++)
+      for (let x = o.x; x < o.x + o.w; x++) if (isSolidTileKind(map.tiles[tileIndex(x, y)])) cells.push(tileIndex(x, y))
+    const hp = EXPLOSIVES[kind].hp
+    props.set(i, { kind, hp, maxHp: hp, cells, x: o.x + o.w / 2, y: o.y + o.h / 2 })
+    for (const c of cells) propAt.set(c, i)
+  })
+  return { props, propAt, destroyedProps: [] as number[] }
+}
 
 const coreCenter = (map: GameMapData, slot: Slot): Point => ({ x: map.cores[slot].x + 1, y: map.cores[slot].y + 1 })
 
@@ -303,6 +338,7 @@ export function createMatch({ seed, players, difficulty, mapId }: CreateMatchOpt
     cores: { 1: { slot: 1, hp: CORE_HP }, 2: { slot: 2, hp: CORE_HP } },
     coreDamageDealt: { 1: 0, 2: 0 },
     crates: { 1: { ...CRATE_START }, 2: { ...CRATE_START } },
+    ...explosivesOf(map),
     difficulty: { ...difficultyOf(difficulty) },
     armory: { x: map.armory.x, y: map.armory.y, available: false, progress: {}, openedBy: null },
     flows: new Map(),
@@ -330,29 +366,33 @@ const wallAt = (s: MatchState, x: number, y: number) => {
   return st && st.type !== 'trap' ? st : undefined
 }
 
-export const isBlocked = (s: MatchState, x: number, y: number) =>
-  isSolidTileKind(tileAt(s.map, x, y)) || isCoreTile(s, x, y) || wallAt(s, x, y) !== undefined
+/** `owner`: el jugador que se mueve atraviesa sus propias paredes y torretas (así nunca queda encerrado). */
+export const isBlocked = (s: MatchState, x: number, y: number, owner?: Slot) => {
+  if (isSolidTileKind(tileAt(s.map, x, y)) || isCoreTile(s, x, y)) return true
+  const w = wallAt(s, x, y)
+  return w !== undefined && w.owner !== owner
+}
 
 const bulletBlocked = (s: MatchState, x: number, y: number) =>
   blocksBullets(tileAt(s.map, x, y)) || isCoreTile(s, x, y) || wallAt(s, x, y) !== undefined
 
 /** Devuelve la primera casilla sólida que toca el cuerpo (caja a la altura de los pies, ver BODY). */
-function overlapSolid(s: MatchState, x: number, y: number, r: number): Point | null {
+function overlapSolid(s: MatchState, x: number, y: number, r: number, owner?: Slot): Point | null {
   for (let ty = Math.floor(y + BODY.top); ty <= Math.floor(y + BODY.bottom - 1e-6); ty++)
-    for (let tx = Math.floor(x - r); tx <= Math.floor(x + r); tx++) if (isBlocked(s, tx, ty)) return { x: tx, y: ty }
+    for (let tx = Math.floor(x - r); tx <= Math.floor(x + r); tx++) if (isBlocked(s, tx, ty, owner)) return { x: tx, y: ty }
   return null
 }
 
 /** Mueve por ejes separados para deslizar contra paredes. Devuelve la casilla que bloqueó, si hubo. */
-function moveEntity(s: MatchState, e: { x: number; y: number }, dx: number, dy: number, r: number): Point | null {
+function moveEntity(s: MatchState, e: { x: number; y: number }, dx: number, dy: number, r: number, owner?: Slot): Point | null {
   let hit: Point | null = null
   if (dx !== 0) {
-    const h = overlapSolid(s, e.x + dx, e.y, r)
+    const h = overlapSolid(s, e.x + dx, e.y, r, owner)
     if (h) hit = h
     else e.x += dx
   }
   if (dy !== 0) {
-    const h = overlapSolid(s, e.x, e.y + dy, r)
+    const h = overlapSolid(s, e.x, e.y + dy, r, owner)
     if (h) hit = hit ?? h
     else e.y += dy
   }
@@ -677,7 +717,7 @@ function updatePlayer(s: MatchState, p: Player, input: PlayerInput, dt: number) 
     }
     // Velocidad máxima validada por el servidor: no depende de los FPS del cliente.
     const speed = PLAYER.speed * perksOf(p.survivor).speed
-    moveEntity(s, p, mx * speed * dt, my * speed * dt, PLAYER.radius)
+    moveEntity(s, p, mx * speed * dt, my * speed * dt, PLAYER.radius, p.slot)
   }
 
   p.fireCd = Math.max(0, p.fireCd - dt)
@@ -726,6 +766,7 @@ function explode(s: MatchState, b: Bullet) {
     z.hurtAt = s.time
     if (z.hp <= 0) rewardZombieKill(s, b.ownerSlot)
   }
+  for (const [i, prop] of [...s.props]) if (Math.hypot(prop.x - b.x, prop.y - b.y) <= r + 0.5) damageProp(s, i, b.splash, b.ownerSlot)
   if (!isCombat(s)) return
   for (const p of s.players)
     if (p.alive && p.slot !== b.ownerSlot && Math.hypot(p.x - b.x, p.y - b.y) <= r) damagePlayer(s, p, b.splash, b.ownerSlot)
@@ -740,6 +781,47 @@ function explode(s: MatchState, b: Bullet) {
   const enemy: Slot = b.ownerSlot === 1 ? 2 : 1
   const c = coreCenter(s.map, enemy)
   if (Math.hypot(c.x - b.x, c.y - b.y) <= r + 1) hitCore(s, b.ownerSlot, b.splash)
+}
+
+/** Daña un barril o tanque; al llegar a 0 explota y deja libre su casilla. */
+function damageProp(s: MatchState, index: number, dmg: number, sourceSlot: Slot | null) {
+  const prop = s.props.get(index)
+  if (!prop || prop.hp <= 0) return
+  prop.hp = applyDamage(prop.hp, dmg)
+  if (prop.hp > 0) return
+  s.props.delete(index)
+  s.destroyedProps.push(index)
+  for (const c of prop.cells) {
+    s.map.tiles[c] = Tile.GRASS
+    s.propAt.delete(c)
+  }
+  s.events.push({ type: 'propDestroyed', index })
+  const ex = EXPLOSIVES[prop.kind]
+  blast(s, prop.x, prop.y, ex.radius, ex.damage, sourceSlot, prop.kind === 'tank')
+}
+
+/**
+ * Explosión del mapa: no distingue equipos. Daña zombis, paredes y torretas de los dos, otros explosivos (en cadena)
+ * y, en combate, a los dos jugadores. Las bajas de zombis cuentan para quien la provocó.
+ */
+function blast(s: MatchState, x: number, y: number, r: number, dmg: number, sourceSlot: Slot | null, big: boolean) {
+  s.events.push({ type: 'explosion', x, y, big })
+  for (const z of s.zombies) {
+    if (z.hp <= 0 || Math.hypot(z.x - x, z.y - y) > r) continue
+    z.hp = applyDamage(z.hp, dmg)
+    z.hurtAt = s.time
+    if (z.hp <= 0 && sourceSlot) rewardZombieKill(s, sourceSlot)
+  }
+  if (isCombat(s))
+    for (const p of s.players) if (p.alive && Math.hypot(p.x - x, p.y - y) <= r) damagePlayer(s, p, dmg, sourceSlot === p.slot ? null : sourceSlot)
+  for (const [key, st] of [...s.structures]) {
+    const cx = (key % s.map.w) + 0.5
+    const cy = Math.floor(key / s.map.w) + 0.5
+    if (Math.hypot(cx - x, cy - y) > r + 0.3) continue
+    st.hp = applyDamage(st.hp, dmg)
+    if (st.hp <= 0) s.structures.delete(key)
+  }
+  for (const [i, prop] of [...s.props]) if (Math.hypot(prop.x - x, prop.y - y) <= r + 0.5) damageProp(s, i, dmg, sourceSlot)
 }
 
 function updateBullets(s: MatchState, dt: number) {
@@ -789,6 +871,8 @@ function updateBullets(s: MatchState, dt: number) {
           explode(s, b)
           return false
         }
+        const prop = s.propAt.get(tileIndex(tx, ty))
+        if (prop !== undefined) damageProp(s, prop, b.damage, b.ownerSlot)
         const wall = wallAt(s, tx, ty)
         if (wall && wall.owner !== b.ownerSlot && pvp) {
           wall.hp = applyDamage(wall.hp, b.damage)

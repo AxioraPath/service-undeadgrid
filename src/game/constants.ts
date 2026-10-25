@@ -69,6 +69,13 @@ export const WEAPONS: Record<WeaponId, WeaponDef> = {
   rocket: { name: 'Lanzacohetes', damage: 40, rate: 0.7, pellets: 1, spread: 0, usesShell: false, speed: 10, range: 11, projectile: 'rocket', pierce: 1 },
 }
 
+/** Barriles explosivos y tanques de combustible del mapa: aguantan unos disparos y explotan (daño a todos cerca). */
+export const EXPLOSIVES = {
+  barrel: { hp: 30, radius: 1.8, damage: 60 },
+  tank: { hp: 120, radius: 2.6, damage: 90 },
+} as const
+export type ExplosiveKind = keyof typeof EXPLOSIVES
+
 /** Explosión del cohete: daña a todo lo enemigo dentro del radio (casillas). */
 export const ROCKET = { radius: 1.6, damage: 55 }
 

@@ -1,11 +1,35 @@
 import { gameInputSchema } from '../contracts/game';
-import { ARMORY, ARMORY_LOOT, BODY, KNIFE, ROCKET, SURVIVOR_PERKS, MAP_H, MAP_W, PLAYER, PLAYER_START, STRUCTURES, TURRET, WEAPONS, perksOf } from './constants';
+import { ARMORY, ARMORY_LOOT, BODY, EXPLOSIVES, KNIFE, ROCKET, SURVIVOR_PERKS, MAP_H, MAP_W, PLAYER, PLAYER_START, STRUCTURES, TURRET, WEAPONS, perksOf } from './constants';
 import { createMatch, frontTile, playerInOwnBase, previewBuild, quantizeFacing, sanitizeAim, step, type Command } from './engine';
 import { encodeState } from './snapshot';
 import { applyDamage, clamp, heal, lerp, zombieCount, zombieDamage, zombieHp } from './formulas';
 import { BUILDINGS, generateMap, Ground, isMapReachable, mapThemeOf, Tile } from './mapgen';
 
 /** Pruebas unitarias de las reglas del juego (matriz del PDF: mapa, daño, Zod, interpolación). */
+
+/**
+ * Simetría de punto: los objetos están en espejo y todas las casillas fuera de las estructuras también.
+ * Dentro de una estructura la colisión sale del sprite (que no se gira), así que se compara con su espejo sin girar.
+ */
+function expectSymmetric(map: ReturnType<typeof generateMap>) {
+  const key = (o: { kind: string; x: number; y: number; w: number; h: number; variant: number }) => `${o.kind}:${o.x},${o.y},${o.w},${o.h},${o.variant}`;
+  const keys = new Set(map.objects.map(key));
+  for (const o of map.objects) expect(keys.has(key({ ...o, x: MAP_W - o.x - o.w, y: MAP_H - o.y - o.h }))).toBe(true);
+  const inBuilding = new Uint8Array(MAP_W * MAP_H);
+  for (const o of map.objects)
+    if (o.kind === 'building') for (let y = o.y; y < o.y + o.h; y++) for (let x = o.x; x < o.x + o.w; x++) inBuilding[y * MAP_W + x] = 1;
+  for (let y = 0; y < MAP_H; y++)
+    for (let x = 0; x < MAP_W; x++)
+      if (!inBuilding[y * MAP_W + x]) expect(map.tiles[y * MAP_W + x]).toBe(map.tiles[(MAP_H - 1 - y) * MAP_W + (MAP_W - 1 - x)]);
+  for (const o of map.objects) {
+    if (o.kind !== 'building') continue;
+    const mx = MAP_W - o.x - o.w;
+    const my = MAP_H - o.y - o.h;
+    for (let y = 0; y < o.h; y++)
+      for (let x = 0; x < o.w; x++) expect(map.tiles[(o.y + y) * MAP_W + o.x + x]).toBe(map.tiles[(my + y) * MAP_W + mx + x]);
+  }
+}
+
 describe('Generador de mapas', () => {
   it(`la cuadrícula mide ${MAP_W} × ${MAP_H} y tiene borde de muros`, () => {
     const map = generateMap(1234);
@@ -34,9 +58,7 @@ describe('Generador de mapas', () => {
     expect([...map.ground].filter((g) => g === Ground.PLAZA)).toHaveLength(16);
     expect(map.armory).toEqual({ x: MAP_W / 2, y: MAP_H / 2 });
     expect(map.objects.some((o) => o.kind === 'building')).toBe(true);
-    for (let y = 0; y < MAP_H; y++)
-      for (let x = 0; x < MAP_W; x++)
-        expect(map.tiles[y * MAP_W + x]).toBe(map.tiles[(MAP_H - 1 - y) * MAP_W + (MAP_W - 1 - x)]);
+    expectSymmetric(map);
   });
 
   it('las bases y los puntos de zombis son alcanzables (BFS)', () => {
@@ -509,8 +531,7 @@ describe('Distrito Industrial', () => {
       expect(m.ground.filter((g) => g === Ground.WATER).length).toBeGreaterThan(0);
       const names = m.objects.filter((o) => o.kind === 'building').map((o) => BUILDINGS[o.variant].name);
       expect(names.some((n) => n.startsWith('ind-') || n.startsWith('urb-') || n.startsWith('helicoptero'))).toBe(true);
-      for (let y = 0; y < MAP_H; y++)
-        for (let x = 0; x < MAP_W; x++) expect(m.tiles[y * MAP_W + x]).toBe(m.tiles[(MAP_H - 1 - y) * MAP_W + (MAP_W - 1 - x)]);
+      expectSymmetric(m);
     }
   });
 
@@ -552,5 +573,62 @@ describe('ventajas de los cinco supervivientes', () => {
     Object.assign(p, { x: s.map.armory.x + 0.5, y: s.map.armory.y + 1.5, dirX: 1, dirY: 0 });
     step(s, { a: { up: false, down: false, left: false, right: false, action: false, fire: true } }, [], 1 / 30);
     expect(s.bullets[0].damage).toBeCloseTo(WEAPONS.pistol.damage * 1.15);
+  });
+});
+
+describe('colisiones, explosivos y paredes propias', () => {
+  const idle = { up: false, down: false, left: false, right: false, action: false };
+
+  it('la colisión de las estructuras sale del dibujo: la fila de techo y las casillas vacías no chocan', () => {
+    for (const b of BUILDINGS) expect(b.solid.length).toBe(b.h);
+    const heli = BUILDINGS.find((b) => b.name === 'helicoptero-militar-derribado')!;
+    expect(heli.solid[0]).toBe('....');
+    for (const seed of [1, 9, 77]) {
+      const m = generateMap(seed, 'industrial');
+      for (const o of m.objects.filter((o) => o.kind === 'building')) {
+        const mask = BUILDINGS[o.variant].solid;
+        for (let y = 0; y < o.h; y++)
+          for (let x = 0; x < o.w; x++) expect(m.tiles[(o.y + y) * MAP_W + o.x + x] !== Tile.GRASS).toBe(mask[y][x] === '#');
+      }
+    }
+  });
+
+  it('un barril aguanta unos disparos, luego explota, daña lo que hay cerca y deja libre su casilla', () => {
+    const s = createMatch({ seed: 21, players: [{ id: 'a', slot: 1, name: 'A', survivor: 'base' }] });
+    const [index, prop] = [...s.props].find(([, p]) => p.kind === 'barrel')!;
+    expect(prop.hp).toBe(EXPLOSIVES.barrel.hp);
+    const cell = prop.cells[0];
+    const z = { id: 999, x: prop.x + 1, y: prop.y, px: 0, py: 0, hp: 500, maxHp: 500, damage: 0, attackCd: 99, retargetAt: 999, trapAcc: 0, kind: 'normal' as const, attackAt: -1, hurtAt: -1, target: null };
+    s.zombies.push(z);
+    const p = s.players[0];
+    // Dispara desde la izquierda del barril hacia él.
+    Object.assign(p, { x: prop.x - 3, y: prop.y, dirX: 1, dirY: 0, alive: true });
+    s.structures.clear();
+    for (let i = 0; i < 30 * 3 && s.props.has(index); i++) step(s, { a: { ...idle, fire: true } }, [], 1 / 30);
+    expect(s.props.has(index)).toBe(false);
+    expect(s.destroyedProps).toContain(index);
+    expect(s.map.tiles[cell]).toBe(Tile.GRASS);
+    expect(z.hp).toBeLessThanOrEqual(500 - EXPLOSIVES.barrel.damage);
+  });
+
+  it('el jugador atraviesa sus propias paredes (no queda encerrado); el rival no', () => {
+    const s = createMatch({
+      seed: 5,
+      players: [
+        { id: 'a', slot: 1, name: 'A', survivor: 'base' },
+        { id: 'b', slot: 2, name: 'B', survivor: 'base' },
+      ],
+    });
+    const [a, b] = s.players;
+    const tx = Math.floor(a.x) + 1;
+    const ty = Math.floor(a.y);
+    s.structures.set(ty * MAP_W + tx, { type: 'wood', hp: 100, maxHp: 100, owner: 1, orient: 'v' });
+    const x0 = a.x;
+    for (let i = 0; i < 20; i++) step(s, { a: { ...idle, right: true } }, [], 1 / 30);
+    expect(a.x).toBeGreaterThan(tx + 0.3);
+    Object.assign(b, { x: x0, y: a.y });
+    for (let i = 0; i < 20; i++) step(s, { b: { ...idle, right: true } }, [], 1 / 30);
+    expect(b.x).toBeLessThan(tx);
+    expect(x0).toBeLessThan(tx);
   });
 });

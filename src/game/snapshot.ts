@@ -86,6 +86,10 @@ export function encodeState(s: MatchState, consumeEvents = true): GameStateDto {
         s.players.filter((p) => s.armory.progress[p.id] !== undefined).map((p) => [p.slot, r3(s.armory.progress[p.id])]),
       ),
     },
+    props: {
+      destroyed: [...s.destroyedProps],
+      damaged: [...s.props].filter(([, p]) => p.hp < p.maxHp).map(([i, p]) => [i, p.hp, p.maxHp]),
+    },
     turrets: [...s.structures]
       .filter(([, st]) => st.type === 'turret')
       .map(([key, st]) => [

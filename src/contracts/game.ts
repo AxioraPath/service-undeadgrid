@@ -141,7 +141,8 @@ export type StructureTuple = [number, number, number, number, Slot, 'h' | 'v'];
 
 export type GameEventDto =
   | { type: 'shot'; x: number; y: number; dirX: number; dirY: number; slot: Slot }
-  | { type: 'explosion'; x: number; y: number }
+  | { type: 'explosion'; x: number; y: number; big?: boolean }
+  | { type: 'propDestroyed'; index: number }
   | { type: 'knife'; slot: Slot; x: number; y: number }
   | { type: 'hit'; x: number; y: number }
   | { type: 'zombieDied'; x: number; y: number; kind: 'normal' | 'fast' | 'tank' }
@@ -168,6 +169,8 @@ export interface GameStateDto {
   crates: Record<Slot, StockDto>;
   /** Caja de armamento: disponible, quién la abrió y segundos que lleva abriéndola cada slot. */
   armory: { available: boolean; openedBy: Slot | null; progress: Partial<Record<Slot, number>> };
+  /** Barriles y tanques del mapa (índice en `map.objects`): los que explotaron y los dañados [índice, hp, maxHp]. */
+  props: { destroyed: number[]; damaged: [number, number, number][] };
   /** Torretas: [casilla, aimX, aimY, tiros en el cargador, recargando (0/1), disparando (0/1)]. */
   turrets: [number, number, number, number, number, number][];
   /** Eventos ocurridos desde el último estado (efectos visuales). */

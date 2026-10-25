@@ -44,32 +44,36 @@ export const mapThemeOf = (mapId: string | undefined): MapTheme => (mapId === 'd
 /** `lamp` es solo decoración (no bloquea); el resto ocupa sus casillas. `building` usa BUILDINGS[variant]. */
 export type ObjectKind = 'tree' | 'rock' | 'car' | 'container' | 'debris' | 'barrel' | 'tires' | 'barrier' | 'water' | 'lamp' | 'building' | 'train'
 
-/** Estructuras del paquete de arte: nombre del sprite y casillas que ocupan (colisión = lo que se ve). */
+/**
+ * Estructuras del paquete de arte: sprite, huella (w × h) y qué casillas chocan (`solid`, fila a fila, '#' = sólida).
+ * La colisión sale del dibujo: casillas casi vacías no chocan y en las de 3 filas la de arriba es techo, así que se
+ * puede pasar por detrás (el dibujo tapa al jugador).
+ */
 export const BUILDINGS = [
-  { name: 'almacen', w: 3, h: 3 },
-  { name: 'tienda', w: 3, h: 2 },
-  { name: 'torre-vigilancia', w: 2, h: 3 },
-  { name: 'torre-agua', w: 2, h: 3 },
-  { name: 'generador', w: 2, h: 2 },
-  { name: 'tanque-combustible', w: 3, h: 2 },
-  { name: 'muro-piedra-h', w: 2, h: 1 },
-  { name: 'valla-madera', w: 2, h: 1 },
-  { name: 'sacos-h', w: 2, h: 1 },
+  { name: 'almacen', w: 3, h: 3, solid: ['...', '###', '###'] },
+  { name: 'tienda', w: 3, h: 2, solid: ['###', '###'] },
+  { name: 'torre-vigilancia', w: 2, h: 3, solid: ['..', '##', '##'] },
+  { name: 'torre-agua', w: 2, h: 3, solid: ['..', '##', '##'] },
+  { name: 'generador', w: 2, h: 2, solid: ['..', '##'] },
+  { name: 'tanque-combustible', w: 3, h: 2, solid: ['##.', '###'] },
+  { name: 'muro-piedra-h', w: 2, h: 1, solid: ['##'] },
+  { name: 'valla-madera', w: 2, h: 1, solid: ['##'] },
+  { name: 'sacos-h', w: 2, h: 1, solid: ['##'] },
   // Distrito industrial (paquete de mapas extra y expansión de ciudad).
-  { name: 'ind-taller', w: 3, h: 3 },
-  { name: 'ind-hangar', w: 4, h: 3 },
-  { name: 'ind-sala-control', w: 3, h: 3 },
-  { name: 'ind-planta-bombeo', w: 3, h: 3 },
-  { name: 'ind-refugio-generador', w: 3, h: 3 },
-  { name: 'ind-cobertizo', w: 3, h: 2 },
-  { name: 'urb-gasolinera', w: 3, h: 3 },
-  { name: 'urb-bomberos', w: 4, h: 3 },
-  { name: 'helicoptero-militar-derribado', w: 4, h: 3 },
-  { name: 'ind-silo', w: 2, h: 2 },
-  { name: 'ind-contenedores-apilados', w: 2, h: 2 },
-  { name: 'urb-parada-autobus', w: 2, h: 2 },
-  { name: 'valla-metal-v-sana', w: 1, h: 2 },
-  { name: 'ind-control-h', w: 3, h: 2 },
+  { name: 'ind-taller', w: 3, h: 3, solid: ['...', '###', '###'] },
+  { name: 'ind-hangar', w: 4, h: 3, solid: ['....', '####', '.###'] },
+  { name: 'ind-sala-control', w: 3, h: 3, solid: ['...', '###', '###'] },
+  { name: 'ind-planta-bombeo', w: 3, h: 3, solid: ['...', '###', '###'] },
+  { name: 'ind-refugio-generador', w: 3, h: 3, solid: ['...', '###', '###'] },
+  { name: 'ind-cobertizo', w: 3, h: 2, solid: ['.#.', '###'] },
+  { name: 'urb-gasolinera', w: 3, h: 3, solid: ['...', '###', '.##'] },
+  { name: 'urb-bomberos', w: 4, h: 3, solid: ['....', '###.', '.##.'] },
+  { name: 'helicoptero-militar-derribado', w: 4, h: 3, solid: ['....', '.###', '###.'] },
+  { name: 'ind-silo', w: 2, h: 2, solid: ['##', '##'] },
+  { name: 'ind-contenedores-apilados', w: 2, h: 2, solid: ['##', '##'] },
+  { name: 'urb-parada-autobus', w: 2, h: 2, solid: ['##', '##'] },
+  { name: 'valla-metal-v-sana', w: 1, h: 2, solid: ['#', '#'] },
+  { name: 'ind-control-h', w: 3, h: 2, solid: ['##.', '.##'] },
 ] as const
 
 /** Estructuras de cada tema: grandes (con pasillo alrededor) y pequeñas. */
@@ -279,12 +283,14 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
     spawns.some((p) => Math.abs(p.x - x) <= 2 && Math.abs(p.y - y) <= 2) ||
     inRect(CENTER_CLEAR, x, y)
 
+  // Casillas ocupadas por la huella de un objeto (aunque no choquen, no se pone otro encima).
+  const used = new Uint8Array(MAP_W * MAP_H)
   const fits = (x: number, y: number, w: number, h: number, on: number) => {
     for (let yy = y; yy < y + h; yy++)
       for (let xx = x; xx < x + w; xx++) {
         if (xx < FOREST || yy < FOREST || xx >= MAP_W - FOREST || yy >= MAP_H - FOREST) return false
         const i = idx(xx, yy)
-        if (reserved(xx, yy) || tiles[i] !== on) return false
+        if (reserved(xx, yy) || tiles[i] !== on || used[i]) return false
         if (on === Tile.ROAD && (ground[i] !== Ground.ROAD || roadNeighbors(tiles, xx, yy) > 2)) return false
       }
     return true
@@ -307,13 +313,16 @@ function buildMap(seed: number, theme: MapTheme): GameMapData {
     const overlapsMirror = x < mx + w && mx < x + w && y < my + h && my < y + h
     if (overlapsMirror || !fits(x, y, w, h, on) || !fits(mx, my, w, h, on)) return false
     if (margin && (!clearAround(x, y, w, h) || !clearAround(mx, my, w, h))) return false
+    // El sprite no se gira en el espejo, así que la máscara de colisión es la misma en los dos lados.
+    const solid = kind === 'building' ? BUILDINGS[variant].solid : null
     for (const [ox, oy] of [[x, y], [mx, my]]) {
-      if (kind !== 'lamp')
-        for (let yy = oy; yy < oy + h; yy++)
-          for (let xx = ox; xx < ox + w; xx++) {
-            tiles[idx(xx, yy)] = OBJECT_TILE[kind]
-            if (kind === 'water') ground[idx(xx, yy)] = Ground.WATER
-          }
+      for (let yy = oy; yy < oy + h; yy++)
+        for (let xx = ox; xx < ox + w; xx++) {
+          used[idx(xx, yy)] = 1
+          if (kind === 'lamp' || (solid && solid[yy - oy][xx - ox] !== '#')) continue
+          tiles[idx(xx, yy)] = OBJECT_TILE[kind]
+          if (kind === 'water') ground[idx(xx, yy)] = Ground.WATER
+        }
       objects.push({ kind, x: ox, y: oy, w, h, variant })
     }
     return true
